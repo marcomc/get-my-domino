@@ -1,0 +1,32 @@
+"""Domain models for rivistadomino.it exports."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Link:
+    title: str
+    url: str
+    group: str | None = None
+    published_date: str | None = None
+    order: int | None = None
+
+
+@dataclass(frozen=True)
+class Issue:
+    title: str
+    url: str
+    published_month: str | None
+    articles: list[Link]
+
+
+@dataclass(frozen=True)
+class Article:
+    title: str
+    url: str
+    html: str
+    text: str
+    issue_title: str | None = None
+    author: str | None = None

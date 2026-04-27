@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "get-my-domino config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "app_name": {
+      "type": "string",
+      "default": "get-my-domino"
+    },
+    "default_output": {
+      "type": "string",
+      "enum": ["text", "json"],
+      "default": "text"
+    },
+    "verbose": {
+      "type": "boolean",
+      "default": false
+    },
+    "base_url": {
+      "type": "string",
+      "default": "https://www.rivistadomino.it/"
+    },
+    "magazine_index_url": {
+      "type": "string",
+      "default": "https://www.rivistadomino.it/mio-account/my_domino/"
+    },
+    "output_dir": {
+      "type": "string",
+      "default": "~/Documents/rivistadomino"
+    },
+    "feed_index_url": {
+      "type": "string",
+      "default": "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
+    },
+    "feed_folder_name": {
+      "type": "string",
+      "default": "la-settimana-di-domino"
+    },
+    "auth_login_url": {
+      "type": "string",
+      "default": "https://www.rivistadomino.it/mio-account/"
+    },
+    "auth_username": {
+      "type": "string",
+      "default": ""
+    },
+    "auth_password": {
+      "type": "string",
+      "default": ""
+    },
+    "auth_username_field": {
+      "type": "string",
+      "default": "username"
+    },
+    "auth_password_field": {
+      "type": "string",
+      "default": "password"
+    },
+    "auth_submit_field": {
+      "type": "string",
+      "default": "login"
+    },
+    "auth_submit_value": {
+      "type": "string",
+      "default": "Accedi"
+    },
+    "auth_session_path": {
+      "type": "string",
+      "default": "~/.config/get-my-domino/session.json"
+    },
+    "auth_browser_timeout": {
+      "type": "number",
+      "default": 300
+    },
+    "request_timeout": {
+      "type": "number",
+      "default": 30
+    },
+    "user_agent": {
+      "type": "string",
+      "default": "get-my-domino/0.1.0"
+    },
+    "siri_voice": {
+      "type": "string",
+      "default": ""
+    },
+    "audio_auto": {
+      "type": "boolean",
+      "default": false
+    },
+    "audio_format": {
+      "type": "string",
+      "enum": ["m4a", "mp4a", "mp3"],
+      "default": "m4a"
+    },
+    "issue_link_patterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["?sfoglia=1"]
+    },
+    "article_link_patterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["/blog/20"]
+    },
+    "feed_article_link_patterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["/blog/20"]
+    },
+    "skip_link_patterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["#", "mailto:", "tel:", "wp-login", "privacy", "cookie", "/blog/author/"]
+    },
+    "content_selectors": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [
+        "article",
+        "main article",
+        "main",
+        ".entry-content",
+        ".post-content",
+        ".article-content",
+        "#content"
+      ]
+    }
+  }
+}

@@ -1,0 +1,47 @@
+# Copy this file to ~/.config/get-my-domino/config.toml or pass it with
+# --config.
+
+app_name = "get-my-domino"
+default_output = "text"
+verbose = false
+base_url = "https://www.rivistadomino.it/"
+magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
+output_dir = "~/Documents/rivistadomino"
+feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
+feed_folder_name = "la-settimana-di-domino"
+request_timeout = 30
+user_agent = "get-my-domino/0.1.0"
+# Leave empty to call macOS `say` without `-v`, so it uses the System Voice
+# selected in System Settings > Accessibility > Spoken Content.
+# Set only to a voice listed by `get-my-domino voices` when you want to force
+# one of the older `say -v` selectable voices.
+siri_voice = ""
+audio_auto = false
+audio_format = "m4a"
+
+# Authentication is read from this config file, not from browser extensions.
+# Fill these values in ~/.config/get-my-domino/config.toml.
+auth_login_url = "https://www.rivistadomino.it/mio-account/"
+auth_username = ""
+auth_password = ""
+auth_username_field = "username"
+auth_password_field = "password"
+auth_submit_field = "login"
+auth_submit_value = "Accedi"
+auth_session_path = "~/.config/get-my-domino/session.json"
+auth_browser_timeout = 300
+
+# Tune these if the private site structure changes.
+issue_link_patterns = ["?sfoglia=1"]
+article_link_patterns = ["/blog/20"]
+feed_article_link_patterns = ["/blog/20"]
+skip_link_patterns = ["#", "mailto:", "tel:", "wp-login", "privacy", "cookie", "/blog/author/"]
+content_selectors = [
+  "article",
+  "main article",
+  "main",
+  ".entry-content",
+  ".post-content",
+  ".article-content",
+  "#content",
+]
