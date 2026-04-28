@@ -18,8 +18,8 @@
 `get-my-domino` downloads articles from `rivistadomino.it` for offline reading
 and audio generation. It discovers magazine issues and recurring article feeds,
 lists articles with their section grouping, exports each article as clean HTML,
-UTF-8 text, RTF, and metadata, and can turn the text into local `.m4a` or
-`.mp3` audio files with the macOS `say` voice engine.
+UTF-8 text, optional RTF, and lightweight metadata, and can turn the text into
+local `.m4a` or `.mp3` audio files with the macOS `say` voice engine.
 
 ## Features
 
@@ -29,9 +29,9 @@ UTF-8 text, RTF, and metadata, and can turn the text into local `.m4a` or
 - Magazine export grouped by issue month, issue title, section, and article
   date
 - `La settimana di Domino` export grouped in one dated article collection
-- Clean article export to `article.html`, UTF-8 `article.txt`, `article.rtf`,
-  and `metadata.json`; readable text omits source URLs so audio does not read
-  them aloud
+- Clean article export to same-name `.html` and `.txt` files, optional `.rtf`,
+  and lightweight `metadata.json`; readable text omits source URLs so audio
+  does not read them aloud
 - Incremental `sync-magazine` and `sync-feed` commands with local manifests
 - Optional `.m4a` or `.mp3` synthesis through macOS `say` and `afconvert`
 - Default config file at `~/.config/get-my-domino/config.toml`
@@ -127,6 +127,7 @@ feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-dom
 feed_folder_name = "la-settimana-di-domino"
 audio_auto = false
 audio_format = "m4a"
+export_formats = ["html", "txt"]
 siri_voice = ""
 auth_login_url = "https://www.rivistadomino.it/mio-account/"
 auth_username = ""
@@ -207,6 +208,21 @@ month and omit storefront price text.
 Use `catalog` for human browsing. The older `issues`, `articles`, and `feed`
 commands remain as raw URL list commands for scripts and JSON output.
 
+Command intent:
+
+| Command | Scope | Intended use |
+| --- | --- | --- |
+| `catalog` | Lists issues, issue contents, and feed entries | Human browsing before choosing what to download |
+| `download` | Downloads known targets by URL, one issue article, or one whole issue | Manual, targeted downloads and repairs |
+| `sync-magazine` | Scans every available magazine issue and downloads only missing articles | Periodic archive updates and automation |
+| `sync-feed` | Scans the recurring weekly feed and downloads only missing articles | Periodic weekly-feed updates and automation |
+
+`download` is intentionally narrow: it does not scan the whole archive unless
+you select one issue with `--issue` and `--all`. `sync-magazine` is the
+database/archive maintenance command: it walks all available magazine issues,
+uses the local manifest to skip articles already present, and adds only new
+articles. `sync-feed` does the same for `La settimana di Domino`.
+
 Download specific articles:
 
 ```bash
@@ -221,18 +237,55 @@ from `catalog --issue`:
 get-my-domino download --issue 2026-04 --article 1
 ```
 
+Download every article from one magazine issue:
+
+```bash
+get-my-domino download --issue 2026-04 --all
+```
+
 Explicit downloads reuse existing article folders from the manifest. If only
 audio is missing, the CLI generates audio from the existing UTF-8
-`article.txt`. If any export file is missing, it refetches the article and
-fills the missing export set. Use `--force` to refetch and rewrite the export
-even when all files already exist:
+`.txt` export. If audio already exists, it is reused and not regenerated. If
+any configured export file is missing, it refetches the article and fills the
+missing export set.
+
+To regenerate one audio file, delete only that `.m4a` or `.mp3` file and rerun
+the same `download` command. This is the narrowest repair path when the audio
+is corrupt or when you changed the configured system voice and want to rebuild
+only one article. Use `--force` when you want to refetch, rewrite exports, and
+regenerate audio for every selected article:
 
 ```bash
 get-my-domino download --issue 2026-04 --article 1 --force
 ```
 
-Long download operations print flushed `progress:` messages to stderr for
-network fetches, retries, export writes, and audio generation.
+Long operations show friendly status messages. In an interactive terminal, the
+current step uses an animated indeterminate progress bar and then turns into a
+check mark when complete; in logs or redirected output, the CLI prints plain
+start and done lines. Download results are summarized as one compact row per
+article with export status, audio status, and total elapsed time:
+
+```text
+article                                                    export     audio      time
+✓ Cosa fare a Teheran quando sei morto                     reused     reused     00:00
+✓ E la Casa Bianca restò sola                              written    generated  01:05
+```
+
+When terminal colors are available, status labels use restrained color for
+quick scanning. Use `--verbose` to also print the article export directory
+after each row. The article summary includes one total elapsed time.
+macOS `say` does not expose true synthesis percentage, so audio generation
+does not show a percentage or ETA. Press `Ctrl-C` to stop a run cleanly; the
+CLI stops active speech synthesis, removes the temporary `.aiff` file, and
+prints `interrupted` without a Python traceback.
+
+Set `export_formats` in the config, or repeat `--format` on `download`,
+`sync-magazine`, or `sync-feed`, to choose article export formats. The default
+is `["html", "txt"]`; `rtf` is available but not generated unless requested.
+
+```bash
+get-my-domino download --issue 2026-04 --article 1 --format txt --format rtf
+```
 
 Scan all issues, skip articles already in the manifest, and download new text:
 
@@ -246,9 +299,23 @@ Magazine articles are saved under:
 output_dir/
 └── 2026-04-guaio-persiano/
     ├── 01-l-editoriale/
-    │   └── 01-2026-04-21-cosa-fare-a-teheran-quando-sei-morto/
+    │   └── 01-cosa-fare-a-teheran-quando-sei-morto/
+    │       ├── 01-cosa-fare-a-teheran-quando-sei-morto.html
+    │       ├── 01-cosa-fare-a-teheran-quando-sei-morto.txt
+    │       └── metadata.json
     └── 02-la-guerra-va-male/
-        └── 02-2026-04-21-e-la-casa-bianca-rest-sola/
+        └── 02-e-la-casa-bianca-rest-sola/
+```
+
+Generated magazine audio is saved separately under `output_dir/audio` so audio
+players can browse it without article HTML, text, and metadata files:
+
+```text
+output_dir/
+└── audio/
+    └── 2026-04-guaio-persiano/
+        ├── 01-cosa-fare-a-teheran-quando-sei-morto.m4a
+        └── 02-e-la-casa-bianca-rest-sola.m4a
 ```
 
 Scan `La settimana di Domino` and save it under `output_dir/feed_folder_name`:
@@ -264,6 +331,8 @@ Feed articles are saved with date-first names, for example:
 output_dir/la-settimana-di-domino/
 └── 2026-04-24-usa-e-globalizzazione-guerra-in-medio-oriente/
 ```
+
+Generated feed audio is saved under `output_dir/audio/feed_folder_name/`.
 
 Create audio from downloaded text files:
 

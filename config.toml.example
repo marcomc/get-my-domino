@@ -18,6 +18,7 @@ user_agent = "get-my-domino/0.1.0"
 siri_voice = ""
 audio_auto = false
 audio_format = "m4a"
+export_formats = ["html", "txt"]
 
 # Authentication is read from this config file, not from browser extensions.
 # Fill these values in ~/.config/get-my-domino/config.toml.

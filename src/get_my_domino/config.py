@@ -9,6 +9,8 @@ from typing import Any
 
 from .audio import normalize_audio_format
 
+SUPPORTED_EXPORT_FORMATS = ("html", "txt", "rtf")
+
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "get-my-domino" / "config.toml"
 DEFAULT_SESSION_PATH = Path.home() / ".config" / "get-my-domino" / "session.json"
 DEFAULT_OUTPUT_DIR = Path.home() / "Documents" / "rivistadomino"
@@ -59,6 +61,7 @@ class AppConfig:
     siri_voice: str | None = None
     audio_auto: bool = False
     audio_format: str = "m4a"
+    export_formats: tuple[str, ...] = ("html", "txt")
 
     @property
     def feed_output_dir(self) -> Path:
@@ -156,6 +159,7 @@ def load_config(path: Path) -> AppConfig:
         siri_voice=str(data["siri_voice"]) if data.get("siri_voice") else None,
         audio_auto=bool(data.get("audio_auto", False)),
         audio_format=normalize_audio_format(str(data.get("audio_format", "m4a"))),
+        export_formats=normalize_export_formats(data.get("export_formats", ("html", "txt"))),
     )
 
 
@@ -163,3 +167,27 @@ def _folder_name_from_legacy_weekly_output(data: dict[str, Any]) -> str:
     if "weekly_output_dir" not in data:
         return "la-settimana-di-domino"
     return Path(str(data["weekly_output_dir"])).expanduser().name or "la-settimana-di-domino"
+
+
+def normalize_export_formats(value: object) -> tuple[str, ...]:
+    raw_formats: tuple[str, ...]
+    if isinstance(value, str):
+        raw_formats = (value,)
+    elif isinstance(value, list | tuple):
+        raw_formats = tuple(str(item) for item in value)
+    else:
+        raise ValueError("export_formats must be a string or list of strings.")
+
+    formats: list[str] = []
+    for item in raw_formats:
+        normalized = item.strip().lower().removeprefix(".")
+        if normalized == "text":
+            normalized = "txt"
+        if normalized not in SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(SUPPORTED_EXPORT_FORMATS)
+            raise ValueError(f"export_formats must contain only: {supported}.")
+        if normalized not in formats:
+            formats.append(normalized)
+    if not formats:
+        raise ValueError("export_formats must contain at least one format.")
+    return tuple(formats)

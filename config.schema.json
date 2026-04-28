@@ -94,6 +94,24 @@
       "enum": ["m4a", "mp4a", "mp3"],
       "default": "m4a"
     },
+    "export_formats": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": ["html", "txt", "text", "rtf"]
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["html", "txt", "text", "rtf"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      ],
+      "default": ["html", "txt"]
+    },
     "issue_link_patterns": {
       "type": "array",
       "items": { "type": "string" },

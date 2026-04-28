@@ -88,6 +88,18 @@ def test_version_flag_prints_version(capsys: CaptureFixture[str]) -> None:
     assert captured.out.strip() == __version__
 
 
+def test_unknown_command_prints_friendly_suggestion(capsys: CaptureFixture[str]) -> None:
+    result = cli.main(["dowload"])
+
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert "Unknown command: dowload" in captured.err
+    assert "Did you mean: download?" in captured.err
+    assert "invalid choice" not in captured.err
+    assert "choose from" not in captured.err
+
+
 def test_console_main_reads_sys_argv(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]) -> None:
     monkeypatch.setattr("sys.argv", ["get-my-domino", "--version"])
 
@@ -236,6 +248,27 @@ def test_config_rejects_unknown_audio_format(tmp_path: Path) -> None:
         raise AssertionError("Expected audio_format validation failure.")
 
 
+def test_config_reads_export_formats(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('export_formats = ["txt", "rtf"]\n', encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.export_formats == ("txt", "rtf")
+
+
+def test_config_rejects_unknown_export_format(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('export_formats = ["txt", "pdf"]\n', encoding="utf-8")
+
+    try:
+        load_config(config_path)
+    except ValueError as exc:
+        assert "export_formats" in str(exc)
+    else:
+        raise AssertionError("Expected export_formats validation failure.")
+
+
 def test_web_client_logs_in_with_hidden_fields_and_reuses_session(tmp_path: Path) -> None:
     login_url = "https://www.rivistadomino.it/mio-account/"
     issue_url = "https://www.rivistadomino.it/numero-1/"
@@ -359,7 +392,7 @@ def test_web_client_retries_transient_get_disconnect(
 
     captured = capsys.readouterr()
     assert [link.title for link in links] == ["Articolo"]
-    assert "progress: retry 2/3 GET" in captured.err
+    assert "↻ Retrying request 2/3: GET" in captured.err
     assert session.gets == [issue_url]
 
 
@@ -658,12 +691,120 @@ def test_download_resolves_issue_article_selector(
 
     captured = capsys.readouterr()
     assert result == 0
-    assert "progress: resolve issue 2026-04" in captured.err
-    assert "progress: resolve article 1" in captured.err
-    assert f"progress: fetch {article_url}" in captured.err
-    assert "progress: write export" in captured.err
-    assert "downloaded: Editoriale" in captured.out
-    assert (tmp_path / "exports" / "001-editoriale" / "article.html").exists()
+    assert "→ Finding issue 2026-04..." in captured.err
+    assert "✓ Finding issue 2026-04" in captured.err
+    assert "→ Selecting article 1..." in captured.err
+    assert "→ Downloading article" in captured.err
+    assert "→ Writing files in 01-editoriale..." in captured.err
+    assert "article" in captured.out
+    assert "export" in captured.out
+    assert "audio" in captured.out
+    assert "✓ Editoriale" in captured.out
+    assert "written" in captured.out
+    assert "off" in captured.out
+    assert (
+        tmp_path
+        / "exports"
+        / "2026-04-guaio-persiano"
+        / "01-l-editoriale"
+        / "01-editoriale"
+        / "01-editoriale.html"
+    ).exists()
+
+
+def test_download_issue_all_downloads_every_article(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
+    first_article = "https://www.rivistadomino.it/blog/2026/04/21/editoriale"
+    second_article = "https://www.rivistadomino.it/blog/2026/04/21/analisi"
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">4/2026 Guaio persiano</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/guaio-persiano?sfoglia=1": f"""
+            <article class="product">
+              <div class="summary">
+                <h1 class="product_title">Guaio persiano</h1>
+                <p>4/2026 Guaio persiano</p>
+              </div>
+              <div id="tab-articles">
+                <h3>L'Editoriale</h3>
+                <a class="article_title" href="{first_article}">Editoriale</a>
+                <h3>Analisi</h3>
+                <a class="article_title" href="{second_article}">Analisi</a>
+              </div>
+            </article>
+            """,
+            first_article: "<article><h1>Editoriale</h1><p>Corpo 1.</p></article>",
+            second_article: "<article><h1>Analisi</h1><p>Corpo 2.</p></article>",
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    result = cli._download_issue_articles(
+        issue_selector="2026-04",
+        config=config,
+        output_dir=config.output_dir,
+        create_audio=False,
+        audio_format="m4a",
+        export_formats=("html", "txt"),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "✓ Editoriale" in captured.out
+    assert "✓ Analisi" in captured.out
+    assert captured.out.count("written") == 2
+    assert (
+        tmp_path
+        / "exports"
+        / "2026-04-guaio-persiano"
+        / "01-l-editoriale"
+        / "01-editoriale"
+        / "01-editoriale.html"
+    ).exists()
+    assert (
+        tmp_path
+        / "exports"
+        / "2026-04-guaio-persiano"
+        / "02-analisi"
+        / "02-analisi"
+        / "02-analisi.html"
+    ).exists()
+
+
+def test_download_issue_all_rejects_ambiguous_selectors(capsys: CaptureFixture[str]) -> None:
+    result = cli.main(["download", "--issue", "2026-04", "--article", "1", "--all"])
+
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "Use either --article or --all with --issue, not both." in captured.err
+
+
+def test_keyboard_interrupt_prints_clean_message(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    def fake_login(config: AppConfig, *, use_browser: bool) -> int:
+        del config, use_browser
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_handle_login", fake_login)
+
+    result = cli.main(["login"])
+
+    captured = capsys.readouterr()
+    assert result == 130
+    assert captured.err == "interrupted\n"
+    assert "Traceback" not in captured.err
 
 
 def test_explicit_download_reuses_existing_manifest_dir_and_backfills_audio(
@@ -704,6 +845,8 @@ def test_explicit_download_reuses_existing_manifest_dir_and_backfills_audio(
         cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
     )
     monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+    clock = iter([0.0, 65.0])
+    monkeypatch.setattr("get_my_domino.cli.time.monotonic", lambda: next(clock))
 
     result = cli._download_articles(
         [article_url],
@@ -715,10 +858,15 @@ def test_explicit_download_reuses_existing_manifest_dir_and_backfills_audio(
 
     assert result == 0
     assert not (tmp_path / "exports" / "002-editoriale").exists()
-    assert (existing_dir / "article.html").exists()
-    assert "Corpo aggiornato." in (existing_dir / "article.txt").read_text(encoding="utf-8")
-    assert (existing_dir / "article.rtf").exists()
-    assert audio_calls == [(existing_dir / "article.txt", existing_dir / "article.m4a")]
+    assert (existing_dir / "001-editoriale.html").exists()
+    assert "Corpo aggiornato." in (existing_dir / "001-editoriale.txt").read_text(encoding="utf-8")
+    assert not (existing_dir / "001-editoriale.rtf").exists()
+    assert audio_calls == [
+        (
+            existing_dir / "001-editoriale.txt",
+            tmp_path / "exports" / "audio" / "001-editoriale.m4a",
+        )
+    ]
 
 
 def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
@@ -727,9 +875,8 @@ def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
     article_url = "https://www.rivistadomino.it/blog/2026/04/21/editoriale"
     existing_dir = tmp_path / "exports" / "001-editoriale"
     existing_dir.mkdir(parents=True)
-    (existing_dir / "article.html").write_text("<article>old</article>", encoding="utf-8")
-    (existing_dir / "article.txt").write_text("Titolo\n\nCorpo 日本語.", encoding="utf-8")
-    (existing_dir / "article.rtf").write_text(r"{\rtf1 old}", encoding="ascii")
+    (existing_dir / "001-editoriale.html").write_text("<article>old</article>", encoding="utf-8")
+    (existing_dir / "001-editoriale.txt").write_text("Titolo\n\nCorpo 日本語.", encoding="utf-8")
     (existing_dir / "metadata.json").write_text("{}", encoding="utf-8")
     (tmp_path / "exports" / "manifest.json").write_text(
         json.dumps({article_url: str(existing_dir)}),
@@ -758,6 +905,8 @@ def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
         cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
     )
     monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+    clock = iter([0.0, 65.0])
+    monkeypatch.setattr("get_my_domino.cli.time.monotonic", lambda: next(clock))
 
     result = cli._download_articles(
         [article_url],
@@ -769,11 +918,138 @@ def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
 
     assert result == 0
     captured = capsys.readouterr()
-    assert "progress: export complete; reusing local files" in captured.err
-    assert "progress: audio start article.m4a" in captured.err
+    assert "→ Generating audio 001-editoriale.m4a..." in captured.err
+    assert "✓ Generating audio 001-editoriale.m4a" in captured.err
+    assert "001-editoriale" in captured.out
+    assert "reused" in captured.out
+    assert "generated" in captured.out
+    assert "01:05" in captured.out
     assert session.gets == []
-    assert (existing_dir / "article.html").read_text(encoding="utf-8") == "<article>old</article>"
-    assert audio_calls == [(existing_dir / "article.txt", existing_dir / "article.m4a")]
+    assert (existing_dir / "001-editoriale.html").read_text(encoding="utf-8") == (
+        "<article>old</article>"
+    )
+    assert audio_calls == [
+        (
+            existing_dir / "001-editoriale.txt",
+            tmp_path / "exports" / "audio" / "001-editoriale.m4a",
+        )
+    ]
+
+
+def test_explicit_download_reuses_existing_audio_without_force(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    article_url = "https://www.rivistadomino.it/blog/2026/04/21/editoriale"
+    existing_dir = tmp_path / "exports" / "001-editoriale"
+    existing_dir.mkdir(parents=True)
+    (existing_dir / "001-editoriale.html").write_text("<article>old</article>", encoding="utf-8")
+    (existing_dir / "001-editoriale.txt").write_text("Titolo\n\nCorpo.", encoding="utf-8")
+    (existing_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    audio_path = tmp_path / "exports" / "audio" / "001-editoriale.m4a"
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_text("existing audio", encoding="utf-8")
+    (tmp_path / "exports" / "manifest.json").write_text(
+        json.dumps({article_url: str(existing_dir)}),
+        encoding="utf-8",
+    )
+    session = FakeSession({article_url: "<article><h1>Should not fetch</h1></article>"})
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    audio_calls: list[tuple[Path, Path]] = []
+
+    def fake_synthesize_audio(
+        source: Path,
+        output: Path,
+        *,
+        voice: str | None,
+        audio_format: str,
+    ) -> Path:
+        del voice, audio_format
+        audio_calls.append((source, output))
+        output.write_text("new audio", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+    monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+    clock = iter([0.0, 65.0])
+    monkeypatch.setattr("get_my_domino.cli.time.monotonic", lambda: next(clock))
+
+    result = cli._download_articles(
+        [article_url],
+        config,
+        config.output_dir,
+        create_audio=True,
+        audio_format="m4a",
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert session.gets == []
+    assert audio_calls == []
+    assert audio_path.read_text(encoding="utf-8") == "existing audio"
+    assert "✓ 001-editoriale" in captured.out
+    assert captured.out.count("reused") == 2
+    assert "if this audio file is corrupt" not in captured.err
+
+
+def test_explicit_download_force_regenerates_existing_audio(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    article_url = "https://www.rivistadomino.it/blog/2026/04/21/editoriale"
+    existing_dir = tmp_path / "exports" / "001-editoriale"
+    existing_dir.mkdir(parents=True)
+    (existing_dir / "001-editoriale.html").write_text("<article>old</article>", encoding="utf-8")
+    (existing_dir / "001-editoriale.txt").write_text("Titolo\n\nCorpo.", encoding="utf-8")
+    (existing_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    audio_path = tmp_path / "exports" / "audio" / "001-editoriale.m4a"
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_text("existing audio", encoding="utf-8")
+    (tmp_path / "exports" / "manifest.json").write_text(
+        json.dumps({article_url: str(existing_dir)}),
+        encoding="utf-8",
+    )
+    session = FakeSession(
+        {article_url: "<article><h1>Editoriale</h1><p>Corpo aggiornato.</p></article>"}
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    audio_calls: list[tuple[Path, Path]] = []
+
+    def fake_synthesize_audio(
+        source: Path,
+        output: Path,
+        *,
+        voice: str | None,
+        audio_format: str,
+    ) -> Path:
+        del voice, audio_format
+        audio_calls.append((source, output))
+        output.write_text("new audio", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+    monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+
+    result = cli._download_articles(
+        [article_url],
+        config,
+        config.output_dir,
+        create_audio=True,
+        audio_format="m4a",
+        force=True,
+    )
+
+    assert result == 0
+    assert audio_calls == [(existing_dir / "001-editoriale.txt", audio_path)]
+    assert audio_path.read_text(encoding="utf-8") == "new audio"
 
 
 def test_explicit_download_force_rewrites_existing_export(
@@ -814,7 +1090,10 @@ def test_explicit_download_force_rewrites_existing_export(
 
     assert result == 0
     assert session.gets == [article_url]
-    assert "Corpo forzato." in (existing_dir / "article.txt").read_text(encoding="utf-8")
+    assert "Corpo forzato." in (existing_dir / "001-editoriale.txt").read_text(encoding="utf-8")
+    assert not (existing_dir / "article.txt").exists()
+    assert not (existing_dir / "article.html").exists()
+    assert not (existing_dir / "article.rtf").exists()
 
 
 def test_main_help_explains_catalog_without_redundant_aliases() -> None:
@@ -883,11 +1162,7 @@ def test_folder_names_match_feed_and_issue_conventions() -> None:
     assert cli._group_indexes([issue_link, feed_link]) == {"L'Editoriale": 1, "Articoli": 2}
     assert (
         cli._article_folder_name(issue_link, fallback_index=99)
-        == "01-2026-04-21-cosa-fare-a-teheran-quando-sei-morto"
-    )
-    assert (
-        cli._article_folder_name(feed_link, fallback_index=2)
-        == "02-2026-04-24-usa-e-globalizzazione"
+        == "01-cosa-fare-a-teheran-quando-sei-morto"
     )
     assert cli._feed_article_folder_name(feed_link) == "2026-04-24-usa-e-globalizzazione"
 
@@ -1027,18 +1302,38 @@ def test_write_article_creates_html_text_and_metadata(tmp_path: Path) -> None:
         text="Titolo articolo\n\nCorpo con Москва e 日本語.",
     )
 
-    target_dir = write_article(tmp_path, article, index=1)
+    target_dir = write_article(tmp_path, article, index=1, export_formats=("html", "txt"))
 
     assert target_dir.name == "001-titolo-articolo"
-    assert (target_dir / "article.html").exists()
-    article_text = (target_dir / "article.txt").read_text(encoding="utf-8")
+    assert (target_dir / "001-titolo-articolo.html").exists()
+    article_text = (target_dir / "001-titolo-articolo.txt").read_text(encoding="utf-8")
     assert article_text.startswith("Titolo articolo 日本語\n\n")
     assert "https://example.test/articolo/" not in article_text
-    rtf = (target_dir / "article.rtf").read_text(encoding="ascii")
+    assert not (target_dir / "001-titolo-articolo.rtf").exists()
+    metadata = json.loads((target_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["title"] == "Titolo articolo 日本語"
+    assert metadata["url"] == "https://example.test/articolo/"
+    assert "text" not in metadata
+    assert "html" not in metadata
+
+
+def test_write_article_can_create_rtf_when_requested(tmp_path: Path) -> None:
+    article = Article(
+        title="Titolo articolo 日本語",
+        url="https://example.test/articolo/",
+        html="<article><h1>Titolo articolo</h1></article>",
+        text="Corpo con Москва e 日本語.",
+    )
+
+    target_dir = write_article(tmp_path, article, index=1, export_formats=("rtf",))
+
+    rtf = (target_dir / "001-titolo-articolo.rtf").read_text(encoding="ascii")
     assert rtf.startswith(r"{\rtf1")
     assert r"\u26085?" in rtf
     assert r"\u26412?" in rtf
     assert r"\u1052?" in rtf
+    assert not (target_dir / "001-titolo-articolo.html").exists()
+    assert not (target_dir / "001-titolo-articolo.txt").exists()
 
 
 def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
@@ -1057,10 +1352,31 @@ def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
     assert cli._audio_options(download_args, AppConfig()) == (True, "mp3")
 
 
+def test_format_duration_uses_minutes_and_hours() -> None:
+    assert cli._format_duration(0) == "00:00"
+    assert cli._format_duration(65) == "01:05"
+    assert cli._format_duration(3661) == "1:01:01"
+
+
+def test_indeterminate_bar_bounces_inside_width() -> None:
+    assert cli._indeterminate_bar(0) == "[███         ]"
+    assert cli._indeterminate_bar(0, width=10, chunk_width=3) == "[███       ]"
+    assert cli._indeterminate_bar(7, width=10, chunk_width=3) == "[       ███]"
+    assert cli._indeterminate_bar(14, width=10, chunk_width=3) == "[███       ]"
+
+
 def test_speak_paths_uses_requested_audio_format(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
-    text_path = tmp_path / "article.txt"
+    text_path = (
+        tmp_path
+        / "exports"
+        / "2026-04-guaio-persiano"
+        / "01-l-editoriale"
+        / "01-editoriale"
+        / "01-editoriale.txt"
+    )
+    text_path.parent.mkdir(parents=True)
     text_path.write_text("Titolo\n\nCorpo.", encoding="utf-8")
     calls: list[tuple[Path, Path, str | None, str]] = []
 
@@ -1077,12 +1393,18 @@ def test_speak_paths_uses_requested_audio_format(
 
     monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
 
-    result = cli._speak_paths([text_path], voice="Siri Voice 2", audio_format="mp3")
+    result = cli._speak_paths(
+        [text_path],
+        output_dir=tmp_path / "exports",
+        voice="Siri Voice 2",
+        audio_format="mp3",
+    )
 
     captured = capsys.readouterr()
     assert result == 0
-    assert calls == [(text_path, tmp_path / "article.mp3", "Siri Voice 2", "mp3")]
-    assert "article.mp3" in captured.out
+    audio_path = tmp_path / "exports" / "audio" / "2026-04-guaio-persiano" / "01-editoriale.mp3"
+    assert calls == [(text_path, audio_path, "Siri Voice 2", "mp3")]
+    assert str(audio_path) in captured.out
 
 
 def test_synthesize_mp3_uses_ffmpeg_after_say(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -1094,14 +1416,7 @@ def test_synthesize_mp3_uses_ffmpeg_after_say(tmp_path: Path, monkeypatch: Monke
     def fake_which(command: str) -> str | None:
         return f"/usr/bin/{command}"
 
-    def fake_run(
-        command: list[str],
-        *,
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-    ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         if command[0].endswith("say") and command[-1] == "?":
             return subprocess.CompletedProcess(
@@ -1109,14 +1424,19 @@ def test_synthesize_mp3_uses_ffmpeg_after_say(tmp_path: Path, monkeypatch: Monke
                 0,
                 stdout="Alice               it_IT    # Ciao! Mi chiamo Alice.\n",
             )
+        return subprocess.CompletedProcess(command, 0)
+
+    def fake_popen(command: list[str]) -> "FakeProcess":
+        commands.append(command)
         if command[0].endswith("say"):
             Path(command[command.index("-o") + 1]).write_text("aiff", encoding="utf-8")
         elif command[0].endswith("ffmpeg"):
             Path(command[-1]).write_text("mp3", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0)
+        return FakeProcess()
 
     monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
     monkeypatch.setattr("get_my_domino.audio.subprocess.run", fake_run)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
 
     result = audio_module.synthesize_audio(
         text_path,
@@ -1144,16 +1464,16 @@ def test_synthesize_audio_omits_voice_flag_for_system_voice(
     def fake_which(command: str) -> str | None:
         return f"/usr/bin/{command}"
 
-    def fake_run(command: list[str], *, check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_popen(command: list[str]) -> "FakeProcess":
         commands.append(command)
         if command[0].endswith("say"):
             Path(command[command.index("-o") + 1]).write_text("aiff", encoding="utf-8")
         elif command[0].endswith("afconvert"):
             Path(command[-1]).write_text("m4a", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0)
+        return FakeProcess()
 
     monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
-    monkeypatch.setattr("get_my_domino.audio.subprocess.run", fake_run)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
 
     result = audio_module.synthesize_audio(
         text_path,
@@ -1165,6 +1485,69 @@ def test_synthesize_audio_omits_voice_flag_for_system_voice(
     assert result == output_path
     assert commands[0][:2] == ["/usr/bin/say", "-f"]
     assert "-v" not in commands[0]
+
+
+class FakeProcess:
+    def wait(self, timeout: int | None = None) -> int:
+        del timeout
+        return 0
+
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        pass
+
+
+def test_synthesize_audio_terminates_subprocess_on_interrupt(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("Titolo", encoding="utf-8")
+    output_path = tmp_path / "article.m4a"
+    process = FakeInterruptingProcess()
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}"
+
+    monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", lambda command: process)
+
+    try:
+        audio_module.synthesize_audio(
+            text_path,
+            output_path,
+            voice="",
+            audio_format="m4a",
+        )
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("expected KeyboardInterrupt")
+
+    assert process.terminated is True
+    assert process.killed is False
+    assert not output_path.with_suffix(".aiff").exists()
+
+
+class FakeInterruptingProcess:
+    def __init__(self) -> None:
+        self.terminated = False
+        self.killed = False
+        self._interrupted = False
+
+    def wait(self, timeout: int | None = None) -> int:
+        del timeout
+        if not self._interrupted:
+            self._interrupted = True
+            raise KeyboardInterrupt
+        return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
 
 
 def test_synthesize_audio_rejects_voice_that_say_would_silently_ignore(

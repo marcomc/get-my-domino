@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .extract import slugify
@@ -14,28 +14,96 @@ def article_dir(output_dir: Path, article: Article, *, index: int) -> Path:
     return output_dir / f"{index:03d}-{slugify(article.title)}"
 
 
-def write_article(output_dir: Path, article: Article, *, index: int) -> Path:
+def article_basename(target_dir: Path) -> str:
+    return target_dir.name
+
+
+def article_text_path(target_dir: Path) -> Path:
+    return target_dir / f"{article_basename(target_dir)}.txt"
+
+
+def write_article(
+    output_dir: Path,
+    article: Article,
+    *,
+    index: int,
+    export_formats: tuple[str, ...],
+    metadata: dict[str, object] | None = None,
+) -> Path:
     target_dir = article_dir(output_dir, article, index=index)
-    write_article_export(target_dir, article)
+    write_article_export(target_dir, article, export_formats=export_formats, metadata=metadata)
     return target_dir
 
 
-def write_article_named(parent_dir: Path, article: Article, *, name: str) -> Path:
+def write_article_named(
+    parent_dir: Path,
+    article: Article,
+    *,
+    name: str,
+    export_formats: tuple[str, ...],
+    metadata: dict[str, object] | None = None,
+) -> Path:
     target_dir = parent_dir / name
-    write_article_export(target_dir, article)
+    write_article_export(target_dir, article, export_formats=export_formats, metadata=metadata)
     return target_dir
 
 
-def write_article_export(target_dir: Path, article: Article) -> None:
+def write_article_export(
+    target_dir: Path,
+    article: Article,
+    *,
+    export_formats: tuple[str, ...],
+    metadata: dict[str, object] | None = None,
+) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    (target_dir / "article.html").write_text(article.html, encoding="utf-8")
+    _remove_legacy_export_files(target_dir)
+    basename = article_basename(target_dir)
     article_text = article_text_document(article)
-    (target_dir / "article.txt").write_text(article_text, encoding="utf-8")
-    (target_dir / "article.rtf").write_text(_rtf_document(article_text), encoding="ascii")
+    if "html" in export_formats:
+        (target_dir / f"{basename}.html").write_text(article.html, encoding="utf-8")
+    if "txt" in export_formats:
+        (target_dir / f"{basename}.txt").write_text(article_text, encoding="utf-8")
+    if "rtf" in export_formats:
+        (target_dir / f"{basename}.rtf").write_text(_rtf_document(article_text), encoding="ascii")
+    _remove_unselected_export_files(target_dir, export_formats)
     (target_dir / "metadata.json").write_text(
-        json.dumps(asdict(article), ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(
+            article_metadata(article, metadata=metadata),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
+
+
+def _remove_legacy_export_files(target_dir: Path) -> None:
+    for name in ("article.html", "article.txt", "article.rtf"):
+        (target_dir / name).unlink(missing_ok=True)
+
+
+def _remove_unselected_export_files(target_dir: Path, export_formats: tuple[str, ...]) -> None:
+    basename = article_basename(target_dir)
+    for extension in ("html", "txt", "rtf"):
+        if extension not in export_formats:
+            (target_dir / f"{basename}.{extension}").unlink(missing_ok=True)
+
+
+def article_metadata(
+    article: Article, *, metadata: dict[str, object] | None = None
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "title": _clean_heading(article.title) or article.title,
+        "url": article.url,
+        "downloaded_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    if article.issue_title:
+        payload["issue_title"] = article.issue_title
+    if article.author:
+        payload["author"] = article.author
+    if metadata:
+        payload.update({key: value for key, value in metadata.items() if value is not None})
+    return payload
 
 
 def article_text_document(article: Article) -> str:
@@ -52,8 +120,10 @@ def article_text_document(article: Article) -> str:
     return "\n".join([*heading, "", body]).rstrip() + "\n"
 
 
-def missing_article_export_files(target_dir: Path) -> list[str]:
-    expected = ("article.html", "article.txt", "article.rtf", "metadata.json")
+def missing_article_export_files(target_dir: Path, *, export_formats: tuple[str, ...]) -> list[str]:
+    basename = article_basename(target_dir)
+    expected = [f"{basename}.{extension}" for extension in export_formats]
+    expected.append("metadata.json")
     return [name for name in expected if not (target_dir / name).exists()]
 
 

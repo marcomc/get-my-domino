@@ -206,7 +206,7 @@ class WebClient:
                 last_retryable_error = exc
                 if attempt < 2:
                     print(
-                        f"progress: retry {attempt + 2}/3 {method} {url} after {exc}",
+                        f"↻ Retrying request {attempt + 2}/3: {method} {url} ({exc})",
                         file=sys.stderr,
                         flush=True,
                     )

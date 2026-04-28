@@ -23,8 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added issue-aware export layout with issue month folders, section folders,
   and dated article folders.
 - Added date-first feed article folders for chronological sorting.
-- Added UTF-8 `article.txt` plus `article.rtf` exports for articles containing
+- Added UTF-8 text plus optional RTF exports for articles containing
   original-language characters.
+- Added configurable `export_formats` and repeated `--format` flags for
+  `html`, `txt`, and optional `rtf` article exports.
 - Added automatic audio generation through `audio_auto` and configurable
   `audio_format` values `m4a`, `mp4a`, or `mp3`; MP3 conversion uses
   `ffmpeg`.
@@ -35,17 +37,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Simplified issue detail output by showing the issue publication date once and
   removing repeated dates from article rows.
 - Added single-article downloads by issue month and article order.
+- Added `download --issue YYYY-MM --all` to download every article from one
+  selected issue.
+- Documented command intent so `download` is clearly the targeted command,
+  while `sync-magazine` and `sync-feed` are archive update commands.
 - Reused existing manifest directories for explicit downloads so missing export
   formats or audio can be regenerated without duplicate article folders.
 - Added `download --force` to explicitly refetch and rewrite existing article
   exports.
+- Reused existing audio during downloads unless the audio file is missing or
+  `--force` is requested.
+- Documented that deleting one audio file is the narrow repair path for
+  regenerating only that article, while `--force` regenerates every selected
+  article.
 - Added retries for transient HTTP connection drops while fetching Domino pages.
-- Added flushed progress messages for long download, retry, export, and audio
-  generation steps.
+- Added friendly progress output for long download, retry, export, and audio
+  generation steps, with an interactive indeterminate progress bar, completion
+  check marks, and one total elapsed time per article.
+- Reworked `download` output into compact per-article status rows showing
+  export state, audio state, and elapsed time, with paths shown only in verbose
+  mode.
+- Handled `Ctrl-C` cleanly during downloads and speech synthesis, including
+  terminating active subprocesses and removing temporary `.aiff` files.
 - Removed source URLs from `article.txt` and `article.rtf` body text so speech
   synthesis does not read article links aloud.
 - Added issue title and detected `di ...` author lines to generated article
   text when that metadata is available.
+- Renamed article export files to match their containing folder, removed dates
+  from magazine article folder names, and slimmed `metadata.json` so it no
+  longer stores full article HTML or text.
+- Moved generated audio under `output_dir/audio/`, grouped by issue or feed, so
+  audio players can browse audio without article export files.
 - Added `voices` to list macOS `say` voice names and reject configured voices
   that `say` would silently ignore.
 - Documented that Siri/neural voices require leaving `siri_voice` empty so

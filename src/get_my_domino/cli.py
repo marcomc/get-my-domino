@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import re
 import sys
 import textwrap
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Sequence
@@ -15,11 +20,13 @@ from typing import Sequence
 from . import __version__
 from .audio import AudioError, available_say_voices, normalize_audio_format, synthesize_audio
 from .browser_auth import BrowserAuthError, login_with_browser
-from .config import DEFAULT_CONFIG_PATH, AppConfig, load_config
+from .config import DEFAULT_CONFIG_PATH, AppConfig, load_config, normalize_export_formats
 from .extract import article_date_from_url, issue_month_from_text, slugify
 from .models import Article, Issue, Link
 from .session_store import clear_cookies
 from .storage import (
+    article_basename,
+    article_text_path,
     missing_article_export_files,
     read_manifest,
     write_article,
@@ -28,6 +35,24 @@ from .storage import (
     write_manifest,
 )
 from .web import FetchError, WebClient, discover_articles, discover_feed_articles, discover_issues
+
+COMMAND_NAMES = (
+    "info",
+    "login",
+    "logout",
+    "issues",
+    "articles",
+    "feed",
+    "weekly",
+    "catalog",
+    "download",
+    "sync-magazine",
+    "sync",
+    "sync-feed",
+    "sync-weekly",
+    "speak",
+    "voices",
+)
 
 
 def format_main_help() -> str:
@@ -39,7 +64,7 @@ def format_main_help() -> str:
             "",
             "Commands:",
             "  catalog       Browse readable issue and feed indexes",
-            "  download      Download one or more article URLs",
+            "  download      Download selected URLs or articles from one issue",
             "  sync-magazine Download new magazine articles",
             "  sync-feed     Download new weekly feed articles",
             "  speak         Convert downloaded article text to audio",
@@ -172,7 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     download_parser = subparsers.add_parser(
         "download",
-        help="Download one or more articles as clean HTML and text.",
+        help="Download selected article URLs, one issue article, or all articles in one issue.",
     )
     download_parser.add_argument(
         "article_urls",
@@ -181,11 +206,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     download_parser.add_argument(
         "--issue",
-        help="Download an article from a magazine issue by YYYY-MM issue code.",
+        help="Select a magazine issue by YYYY-MM issue code.",
     )
     download_parser.add_argument(
         "--article",
         help="Article order inside --issue, such as 1 or 01.",
+    )
+    download_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Download every article in --issue.",
     )
     download_parser.add_argument(
         "--force",
@@ -197,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory for exported article folders. Defaults to config output_dir.",
     )
+    _add_export_format_options(download_parser)
     _add_audio_options(download_parser)
 
     sync_parser = subparsers.add_parser(
@@ -205,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download new magazine issue articles.",
     )
     _add_audio_options(sync_parser)
+    _add_export_format_options(sync_parser)
     sync_parser.add_argument(
         "--max-articles",
         type=int,
@@ -217,6 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download new recurring feed articles.",
     )
     _add_audio_options(sync_feed_parser)
+    _add_export_format_options(sync_feed_parser)
     sync_feed_parser.add_argument(
         "--max-articles",
         type=int,
@@ -279,6 +312,19 @@ def _add_audio_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_export_format_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--format",
+        dest="export_formats",
+        action="append",
+        choices=["html", "txt", "text", "rtf"],
+        help=(
+            "Export format to write. Repeat for multiple formats. "
+            "Defaults to config export_formats."
+        ),
+    )
+
+
 def _audio_options(args: argparse.Namespace, config: AppConfig) -> tuple[bool, str]:
     if bool(getattr(args, "no_audio", False)):
         create_audio = False
@@ -286,6 +332,13 @@ def _audio_options(args: argparse.Namespace, config: AppConfig) -> tuple[bool, s
         create_audio = bool(getattr(args, "audio", False)) or config.audio_auto
     raw_format = str(getattr(args, "audio_format", None) or config.audio_format)
     return create_audio, normalize_audio_format(raw_format)
+
+
+def _export_format_options(args: argparse.Namespace, config: AppConfig) -> tuple[str, ...]:
+    raw_formats = getattr(args, "export_formats", None)
+    if raw_formats:
+        return normalize_export_formats(raw_formats)
+    return config.export_formats
 
 
 def _info_payload(config: AppConfig, config_path: Path) -> dict[str, object]:
@@ -577,6 +630,7 @@ def _handle_info(config: AppConfig, config_path: Path, as_json: bool) -> int:
     print(f"siri_voice: {config.siri_voice or ''}")
     print(f"audio_auto: {config.audio_auto}")
     print(f"audio_format: {config.audio_format}")
+    print(f"export_formats: {', '.join(config.export_formats)}")
     print(f"auth_login_url: {config.auth_login_url}")
     print(f"auth_username: {_auth_username_display(config.auth_username)}")
     print(f"auth_password: {'configured' if config.auth_password else 'missing'}")
@@ -620,53 +674,196 @@ def _download_articles(
     *,
     create_audio: bool,
     audio_format: str,
+    export_formats: tuple[str, ...] | None = None,
     force: bool = False,
     issue_titles: dict[str, str] | None = None,
+    target_dirs: dict[str, Path] | None = None,
+    metadata_by_url: dict[str, dict[str, object]] | None = None,
 ) -> int:
     client = WebClient(config)
+    selected_formats = export_formats or config.export_formats
     manifest = read_manifest(output_dir)
     next_index = len(manifest) + 1
-    downloaded_dirs: list[Path] = []
+    print(_style_download_header())
     for article_url in article_urls:
+        article_started_at = time.monotonic()
         existing_dir = _existing_article_dir(manifest, article_url)
+        planned_dir = _planned_article_dir(target_dirs, article_url)
+        audio_status = "off"
+        if existing_dir is None and planned_dir is not None:
+            existing_dir = planned_dir
         if existing_dir is not None:
             target_dir = existing_dir
-            missing_files = missing_article_export_files(target_dir)
+            article_label = target_dir.name
+            missing_files = missing_article_export_files(
+                target_dir, export_formats=selected_formats
+            )
             if force or missing_files:
                 reason = "force" if force else f"missing {', '.join(missing_files)}"
-                _progress(f"fetch {article_url} ({reason})")
-                article = client.download_article(article_url)
+                with _progress_step(f"Downloading article ({reason})"):
+                    article = client.download_article(article_url)
                 article = _with_article_context(article, issue_titles=issue_titles)
-                _progress(f"write export {target_dir}")
-                write_article_export(target_dir, article)
+                with _progress_step(f"Writing files in {target_dir.name}"):
+                    write_article_export(
+                        target_dir,
+                        article,
+                        export_formats=selected_formats,
+                        metadata=_article_metadata_context(metadata_by_url, article.url),
+                    )
                 manifest[article.url] = str(target_dir)
-                print(f"downloaded: {article.title}")
+                article_label = article.title
+                export_status = "written"
             else:
-                _progress("export complete; reusing local files")
-                print(f"existing: {target_dir.name}")
-            downloaded_dirs.append(target_dir)
-            print(f"  {target_dir}")
+                export_status = "reused"
+            if create_audio:
+                audio_status, _ = _ensure_audio(
+                    target_dir,
+                    output_dir=output_dir,
+                    voice=config.siri_voice,
+                    audio_format=audio_format,
+                    force=force,
+                )
+            _print_download_result(
+                article_label,
+                export_status=export_status,
+                audio_status=audio_status,
+                elapsed=_format_duration(time.monotonic() - article_started_at),
+                target_dir=target_dir,
+                verbose=config.verbose,
+            )
             continue
 
-        _progress(f"fetch {article_url}")
-        article = client.download_article(article_url)
+        with _progress_step("Downloading article"):
+            article = client.download_article(article_url)
         article = _with_article_context(article, issue_titles=issue_titles)
         if article.url in manifest:
             target_dir = Path(manifest[article.url]).expanduser()
-            _progress(f"write export {target_dir}")
-            write_article_export(target_dir, article)
+            with _progress_step(f"Writing files in {target_dir.name}"):
+                write_article_export(
+                    target_dir,
+                    article,
+                    export_formats=selected_formats,
+                    metadata=_article_metadata_context(metadata_by_url, article.url),
+                )
+        elif planned_dir is not None:
+            target_dir = planned_dir
+            with _progress_step(f"Writing files in {target_dir.name}"):
+                write_article_export(
+                    target_dir,
+                    article,
+                    export_formats=selected_formats,
+                    metadata=_article_metadata_context(metadata_by_url, article.url),
+                )
         else:
-            target_dir = write_article(output_dir, article, index=next_index)
-            _progress(f"write export {target_dir}")
+            target_dir = article_dir_for_index(output_dir, article, index=next_index)
+            with _progress_step(f"Writing files in {target_dir.name}"):
+                target_dir = write_article(
+                    output_dir,
+                    article,
+                    index=next_index,
+                    export_formats=selected_formats,
+                    metadata=_article_metadata_context(metadata_by_url, article.url),
+                )
             next_index += 1
         manifest[article.url] = str(target_dir)
-        downloaded_dirs.append(target_dir)
-        print(f"downloaded: {article.title}")
-        print(f"  {target_dir}")
+        export_status = "written"
+        if create_audio:
+            audio_status, _ = _ensure_audio(
+                target_dir,
+                output_dir=output_dir,
+                voice=config.siri_voice,
+                audio_format=audio_format,
+                force=force,
+            )
+        _print_download_result(
+            article.title,
+            export_status=export_status,
+            audio_status=audio_status,
+            elapsed=_format_duration(time.monotonic() - article_started_at),
+            target_dir=target_dir,
+            verbose=config.verbose,
+        )
     write_manifest(output_dir, manifest)
-    if create_audio:
-        _speak_paths(downloaded_dirs, voice=config.siri_voice, audio_format=audio_format)
     return 0
+
+
+def _style_download_header() -> str:
+    columns = (
+        _style_muted("article"),
+        _style_muted("export"),
+        _style_muted("audio"),
+        _style_muted("time"),
+    )
+    return f"{columns[0]:<58} {columns[1]:<10} {columns[2]:<10} {columns[3]}"
+
+
+def _print_download_result(
+    article_label: str,
+    *,
+    export_status: str,
+    audio_status: str,
+    elapsed: str,
+    target_dir: Path,
+    verbose: bool,
+) -> None:
+    marker = _style_success("✓")
+    title = _truncate(article_label, width=56)
+    export_label = _style_status(export_status)
+    audio_label = _style_status(audio_status)
+    print(f"{marker} {title:<56} {export_label:<10} {audio_label:<10} {elapsed}")
+    if verbose:
+        print(f"  {target_dir}")
+
+
+def _style_status(status: str) -> str:
+    if status in {"written", "generated"}:
+        return _style_success(status)
+    if status == "reused":
+        return _style_info(status)
+    if status == "off":
+        return _style_muted(status)
+    return status
+
+
+def _style_success(value: str) -> str:
+    return _ansi(value, "32")
+
+
+def _style_info(value: str) -> str:
+    return _ansi(value, "36")
+
+
+def _style_muted(value: str) -> str:
+    return _ansi(value, "2")
+
+
+def _ansi(value: str, code: str) -> str:
+    if not _supports_terminal_color():
+        return value
+    return f"\033[{code}m{value}\033[0m"
+
+
+def _truncate(value: str, *, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return value[:width]
+    return value[: width - 3] + "..."
+
+
+def _planned_article_dir(target_dirs: dict[str, Path] | None, article_url: str) -> Path | None:
+    if not target_dirs:
+        return None
+    return target_dirs.get(article_url) or target_dirs.get(article_url.rstrip("/"))
+
+
+def _article_metadata_context(
+    metadata_by_url: dict[str, dict[str, object]] | None,
+    article_url: str,
+) -> dict[str, object] | None:
+    if not metadata_by_url:
+        return None
+    return metadata_by_url.get(article_url) or metadata_by_url.get(article_url.rstrip("/"))
 
 
 def _with_article_context(
@@ -691,8 +888,76 @@ def _existing_article_dir(manifest: dict[str, str], article_url: str) -> Path | 
     return None
 
 
-def _progress(message: str) -> None:
-    print(f"progress: {message}", file=sys.stderr, flush=True)
+def article_dir_for_index(output_dir: Path, article: Article, *, index: int) -> Path:
+    return output_dir / f"{index:03d}-{slugify(article.title)}"
+
+
+@contextmanager
+def _progress_step(label: str) -> Iterator[None]:
+    if not sys.stderr.isatty():
+        print(f"→ {label}...", file=sys.stderr, flush=True)
+        try:
+            yield
+        except BaseException:
+            print(f"✗ {label}", file=sys.stderr, flush=True)
+            raise
+        print(f"✓ {label}", file=sys.stderr, flush=True)
+        return
+
+    stop = threading.Event()
+
+    def spin() -> None:
+        index = 0
+        while not stop.is_set():
+            sys.stderr.write(f"\r{_indeterminate_bar(index)} {label}")
+            sys.stderr.flush()
+            index += 1
+            time.sleep(0.1)
+
+    thread = threading.Thread(target=spin, daemon=True)
+    thread.start()
+    try:
+        yield
+    except BaseException:
+        stop.set()
+        thread.join()
+        sys.stderr.write(f"\r\033[K✗ {label}\n")
+        sys.stderr.flush()
+        raise
+    stop.set()
+    thread.join()
+    sys.stderr.write(f"\r\033[K✓ {label}\n")
+    sys.stderr.flush()
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{remaining_seconds:02d}"
+    return f"{minutes:02d}:{remaining_seconds:02d}"
+
+
+def _indeterminate_bar(frame: int, *, width: int = 12, chunk_width: int = 3) -> str:
+    if width < 3:
+        width = 3
+    chunk_width = min(max(1, chunk_width), width)
+    span = width - chunk_width
+    if span == 0:
+        position = 0
+    else:
+        cycle = span * 2
+        offset = frame % cycle
+        position = offset if offset <= span else cycle - offset
+    cells = [" "] * width
+    for index in range(position, position + chunk_width):
+        cells[index] = "█"
+    return "[" + "".join(cells) + "]"
+
+
+def _progress_done(label: str) -> None:
+    print(f"✓ {label}", file=sys.stderr, flush=True)
 
 
 def _download_issue_article(
@@ -703,23 +968,104 @@ def _download_issue_article(
     output_dir: Path,
     create_audio: bool,
     audio_format: str,
+    export_formats: tuple[str, ...] | None = None,
     force: bool = False,
 ) -> int:
     client = WebClient(config)
-    _progress(f"resolve issue {issue_selector}")
-    issues = _sort_catalog_issues(client.discover_issues())
-    issue_url = _resolve_issue_selector(issues, issue_selector)
-    issue = client.discover_issue(issue_url)
-    _progress(f"resolve article {article_selector}")
-    article_link = _resolve_article_selector(issue.articles, article_selector)
+    with _progress_step(f"Finding issue {issue_selector}"):
+        issues = _sort_catalog_issues(client.discover_issues())
+        issue_url = _resolve_issue_selector(issues, issue_selector)
+        issue = client.discover_issue(issue_url)
+    with _progress_step(f"Selecting article {article_selector}"):
+        article_link = _resolve_article_selector(issue.articles, article_selector)
+    group_indexes = _group_indexes(issue.articles)
+    group_name = article_link.group or "Articoli"
+    issue_dir = output_dir / _issue_folder_name(issue.title, issue.published_month)
+    target_dir = (
+        issue_dir
+        / _group_folder_name(group_name, group_indexes[group_name])
+        / _article_folder_name(
+            article_link,
+            fallback_index=article_link.order or 1,
+        )
+    )
     return _download_articles(
         [article_link.url],
         config,
         output_dir,
         create_audio=create_audio,
         audio_format=audio_format,
+        export_formats=export_formats,
         force=force,
         issue_titles={article_link.url: issue.title},
+        target_dirs={article_link.url: target_dir},
+        metadata_by_url={
+            article_link.url: {
+                "issue_title": issue.title,
+                "issue_month": issue.published_month,
+                "section": group_name,
+                "order": article_link.order,
+                "published_date": article_link.published_date,
+            }
+        },
+    )
+
+
+def _download_issue_articles(
+    *,
+    issue_selector: str,
+    config: AppConfig,
+    output_dir: Path,
+    create_audio: bool,
+    audio_format: str,
+    export_formats: tuple[str, ...] | None = None,
+    force: bool = False,
+) -> int:
+    client = WebClient(config)
+    with _progress_step(f"Finding issue {issue_selector}"):
+        issues = _sort_catalog_issues(client.discover_issues())
+        issue_url = _resolve_issue_selector(issues, issue_selector)
+        issue = client.discover_issue(issue_url)
+
+    group_indexes = _group_indexes(issue.articles)
+    issue_dir = output_dir / _issue_folder_name(issue.title, issue.published_month)
+    article_urls: list[str] = []
+    issue_titles: dict[str, str] = {}
+    target_dirs: dict[str, Path] = {}
+    metadata_by_url: dict[str, dict[str, object]] = {}
+
+    for fallback_index, article_link in enumerate(issue.articles, start=1):
+        group_name = article_link.group or "Articoli"
+        target_dir = (
+            issue_dir
+            / _group_folder_name(group_name, group_indexes[group_name])
+            / _article_folder_name(
+                article_link,
+                fallback_index=article_link.order or fallback_index,
+            )
+        )
+        article_urls.append(article_link.url)
+        issue_titles[article_link.url] = issue.title
+        target_dirs[article_link.url] = target_dir
+        metadata_by_url[article_link.url] = {
+            "issue_title": issue.title,
+            "issue_month": issue.published_month,
+            "section": group_name,
+            "order": article_link.order,
+            "published_date": article_link.published_date,
+        }
+
+    return _download_articles(
+        article_urls,
+        config,
+        output_dir,
+        create_audio=create_audio,
+        audio_format=audio_format,
+        export_formats=export_formats,
+        force=force,
+        issue_titles=issue_titles,
+        target_dirs=target_dirs,
+        metadata_by_url=metadata_by_url,
     )
 
 
@@ -740,6 +1086,7 @@ def _download_new_articles(
     output_dir: Path,
     create_audio: bool,
     audio_format: str,
+    export_formats: tuple[str, ...],
     max_articles: int | None,
 ) -> int:
     client = WebClient(config)
@@ -758,6 +1105,11 @@ def _download_new_articles(
             output_dir,
             article,
             name=_feed_article_folder_name(article_link),
+            export_formats=export_formats,
+            metadata={
+                "feed": "La settimana di Domino",
+                "published_date": article_link.published_date,
+            },
         )
         manifest[article.url] = str(target_dir)
         downloaded_dirs.append(target_dir)
@@ -766,7 +1118,12 @@ def _download_new_articles(
 
     write_manifest(output_dir, manifest)
     if create_audio:
-        _speak_paths(downloaded_dirs, voice=config.siri_voice, audio_format=audio_format)
+        _speak_paths(
+            downloaded_dirs,
+            output_dir=config.output_dir,
+            voice=config.siri_voice,
+            audio_format=audio_format,
+        )
     print(f"new_articles: {len(downloaded_dirs)}")
     return 0
 
@@ -776,6 +1133,7 @@ def _handle_sync(
     *,
     create_audio: bool,
     audio_format: str,
+    export_formats: tuple[str, ...],
     max_articles: int | None,
 ) -> int:
     client = WebClient(config)
@@ -807,6 +1165,14 @@ def _handle_sync(
                     article_link,
                     fallback_index=article_link.order or len(downloaded_dirs) + 1,
                 ),
+                export_formats=export_formats,
+                metadata={
+                    "issue_title": issue_detail.title,
+                    "issue_month": issue_detail.published_month,
+                    "section": group_name,
+                    "order": article_link.order,
+                    "published_date": article_link.published_date,
+                },
             )
             manifest[article.url] = str(target_dir)
             downloaded_dirs.append(target_dir)
@@ -816,7 +1182,12 @@ def _handle_sync(
 
     write_manifest(output_dir, manifest)
     if create_audio:
-        _speak_paths(downloaded_dirs, voice=config.siri_voice, audio_format=audio_format)
+        _speak_paths(
+            downloaded_dirs,
+            output_dir=output_dir,
+            voice=config.siri_voice,
+            audio_format=audio_format,
+        )
     print(f"new_articles: {len(downloaded_dirs)}")
     return 0
 
@@ -840,9 +1211,8 @@ def _group_indexes(links: list[Link]) -> dict[str, int]:
 
 
 def _article_folder_name(link: Link, *, fallback_index: int) -> str:
-    date = link.published_date or article_date_from_url(link.url) or "unknown-date"
     order = link.order or fallback_index
-    return f"{order:02d}-{date}-{slugify(link.title, fallback='articolo')}"
+    return f"{order:02d}-{slugify(link.title, fallback='articolo')}"
 
 
 def _feed_article_folder_name(link: Link) -> str:
@@ -855,6 +1225,7 @@ def _handle_sync_feed(
     *,
     create_audio: bool,
     audio_format: str,
+    export_formats: tuple[str, ...],
     max_articles: int | None,
     pages: int,
 ) -> int:
@@ -865,6 +1236,7 @@ def _handle_sync_feed(
         output_dir=config.feed_output_dir,
         create_audio=create_audio,
         audio_format=audio_format,
+        export_formats=export_formats,
         max_articles=max_articles,
     )
 
@@ -873,28 +1245,79 @@ def _resolve_text_paths(output_dir: Path, paths: list[Path]) -> list[Path]:
     if paths:
         candidates = paths
     else:
-        candidates = sorted(output_dir.glob("*/article.txt"))
+        candidates = sorted(output_dir.glob("**/*.txt"))
 
     text_paths: list[Path] = []
     for path in candidates:
         if path.is_dir():
-            text_paths.append(path / "article.txt")
+            text_paths.append(article_text_path(path))
         else:
             text_paths.append(path)
     return text_paths
 
 
-def _speak_paths(paths: list[Path], *, voice: str | None, audio_format: str) -> int:
+def _speak_paths(
+    paths: list[Path],
+    *,
+    output_dir: Path,
+    voice: str | None,
+    audio_format: str,
+    force: bool = False,
+) -> int:
     normalized_format = normalize_audio_format(audio_format)
     for raw_path in paths:
-        text_path = raw_path / "article.txt" if raw_path.is_dir() else raw_path
-        if not text_path.exists():
-            raise AudioError(f"Text file not found: {text_path}")
-        output_path = text_path.with_suffix(f".{normalized_format}")
-        _progress(f"audio start {output_path.name}")
-        synthesize_audio(text_path, output_path, voice=voice, audio_format=normalized_format)
-        print(f"audio: {output_path}")
+        status, output_path = _ensure_audio(
+            raw_path,
+            output_dir=output_dir,
+            voice=voice,
+            audio_format=normalized_format,
+            force=force,
+        )
+        print(f"audio ({status}): {output_path}")
     return 0
+
+
+def _ensure_audio(
+    raw_path: Path,
+    *,
+    output_dir: Path,
+    voice: str | None,
+    audio_format: str,
+    force: bool = False,
+) -> tuple[str, Path]:
+    normalized_format = normalize_audio_format(audio_format)
+    text_path = article_text_path(raw_path) if raw_path.is_dir() else raw_path
+    if not text_path.exists():
+        raise AudioError(f"Text file not found: {text_path}")
+    output_path = _audio_output_path(
+        text_path.parent,
+        output_dir=output_dir,
+        audio_format=normalized_format,
+    )
+    if output_path.exists() and not force:
+        return "reused", output_path
+    with _progress_step(f"Generating audio {output_path.name}"):
+        synthesize_audio(text_path, output_path, voice=voice, audio_format=normalized_format)
+    return "generated", output_path
+
+
+def _audio_output_path(article_dir: Path, *, output_dir: Path, audio_format: str) -> Path:
+    try:
+        relative = article_dir.resolve().relative_to(output_dir.resolve())
+    except ValueError:
+        relative = Path(article_dir.name)
+
+    parts = relative.parts
+    if len(parts) >= 3:
+        parent = output_dir / "audio" / parts[0]
+    elif len(parts) >= 2 and parts[0] == output_dir.name:
+        parent = output_dir / "audio" / parts[0]
+    elif len(parts) >= 2:
+        parent = output_dir / "audio" / parts[0]
+    else:
+        parent = output_dir / "audio"
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / f"{article_basename(article_dir)}.{audio_format}"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -906,6 +1329,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args_list == ["--version"]:
         print(__version__)
         return 0
+
+    unknown_command = _unknown_command(args_list)
+    if unknown_command is not None:
+        _print_unknown_command(unknown_command)
+        return 2
 
     parser = build_parser()
     args = parser.parse_args(args_list)
@@ -944,6 +1372,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "download":
             output_dir = args.output_dir or config.output_dir
             create_audio, audio_format = _audio_options(args, config)
+            export_formats = _export_format_options(args, config)
+            if args.all:
+                if not args.issue:
+                    raise ValueError("Use --all with --issue.")
+                if args.article:
+                    raise ValueError("Use either --article or --all with --issue, not both.")
+                if args.article_urls:
+                    raise ValueError("Do not pass article URLs with --issue/--all.")
+                return _download_issue_articles(
+                    issue_selector=str(args.issue),
+                    config=config,
+                    output_dir=output_dir,
+                    create_audio=create_audio,
+                    audio_format=audio_format,
+                    export_formats=export_formats,
+                    force=bool(args.force),
+                )
             if args.issue or args.article:
                 if not args.issue or not args.article:
                     raise ValueError("Use --issue and --article together.")
@@ -956,6 +1401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output_dir=output_dir,
                     create_audio=create_audio,
                     audio_format=audio_format,
+                    export_formats=export_formats,
                     force=bool(args.force),
                 )
             if not args.article_urls:
@@ -966,22 +1412,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_dir,
                 create_audio=create_audio,
                 audio_format=audio_format,
+                export_formats=export_formats,
                 force=bool(args.force),
             )
         if args.command in {"sync-magazine", "sync"}:
             create_audio, audio_format = _audio_options(args, config)
+            export_formats = _export_format_options(args, config)
             return _handle_sync(
                 config,
                 create_audio=create_audio,
                 audio_format=audio_format,
+                export_formats=export_formats,
                 max_articles=args.max_articles,
             )
         if args.command in {"sync-feed", "sync-weekly"}:
             create_audio, audio_format = _audio_options(args, config)
+            export_formats = _export_format_options(args, config)
             return _handle_sync_feed(
                 config,
                 create_audio=create_audio,
                 audio_format=audio_format,
+                export_formats=export_formats,
                 max_articles=args.max_articles,
                 pages=int(args.pages),
             )
@@ -990,14 +1441,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             audio_format = normalize_audio_format(args.audio_format or config.audio_format)
             return _speak_paths(
                 _resolve_text_paths(config.output_dir, list(args.paths)),
+                output_dir=config.output_dir,
                 voice=voice,
                 audio_format=audio_format,
             )
         if args.command == "voices":
             return _handle_voices(all_voices=bool(args.all))
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
     except (AudioError, BrowserAuthError, FetchError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     print(format_main_help())
     return 0
+
+
+def _unknown_command(args_list: list[str]) -> str | None:
+    index = 0
+    while index < len(args_list):
+        arg = args_list[index]
+        if arg in {"--config"}:
+            index += 2
+            continue
+        if arg.startswith("--config="):
+            index += 1
+            continue
+        if arg in {"--verbose"}:
+            index += 1
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        if arg not in COMMAND_NAMES:
+            return arg
+        return None
+    return None
+
+
+def _print_unknown_command(command: str) -> None:
+    print(f"error: Unknown command: {command}", file=sys.stderr)
+    matches = difflib.get_close_matches(command, COMMAND_NAMES, n=1, cutoff=0.6)
+    if matches:
+        print(f"Did you mean: {matches[0]}?", file=sys.stderr)
+    print("Run `get-my-domino --help` to see available commands.", file=sys.stderr)

@@ -92,12 +92,28 @@ def synthesize_audio(
     if voice:
         command.extend(["-v", voice])
     try:
-        subprocess.run(command, check=True)
+        _run_interruptible(command)
         convert_args = _conversion_args(normalized_format, aiff_path, output_path)
-        subprocess.run(convert_args, check=True)
+        _run_interruptible(convert_args)
     finally:
         aiff_path.unlink(missing_ok=True)
     return output_path
+
+
+def _run_interruptible(command: list[str]) -> None:
+    process = subprocess.Popen(command)
+    try:
+        return_code = process.wait()
+    except KeyboardInterrupt:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command)
 
 
 def synthesize_m4a(text_path: Path, output_path: Path, *, voice: str | None) -> Path:
