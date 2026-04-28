@@ -416,6 +416,19 @@ The default prompt is installed as a user-editable file at
 different prompt template. The template must keep the placeholders
 `{output_path}`, `{source_text_path}`, and `{normalized_text}`.
 
+Speech normalization config:
+
+| Key | Meaning |
+| --- | --- |
+| `speech_normalize_auto` | Run AI speech normalization automatically before every audio generation. Keep `false` to enable it only with `--speech-normalize`. |
+| `speech_normalize_agent` | AI backend name. Only `codex` is implemented; other configured backend names are reserved for future support. |
+| `speech_normalize_command` | Executable used for the selected agent, usually `codex`; set a full path if the command is not on `PATH`. |
+| `speech_normalize_model` | Optional model name passed to the agent. Empty means the agent CLI uses its default model. |
+| `speech_normalize_timeout` | Maximum seconds allowed for one article normalization run before stopping it. |
+| `speech_normalize_force` | Regenerate `.speech.txt` even when a reusable speech file already exists. |
+| `speech_normalize_fallback` | If normalization fails, continue with the original `.txt` instead of stopping before audio. |
+| `speech_normalize_prompt_path` | User-editable prompt template used by the normalizer. |
+
 List the exact voice names that macOS `say` accepts:
 
 ```bash

@@ -84,6 +84,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Made `sync-feed --audio` and `sync-magazine --audio` generate missing audio
   for articles already present in the local manifest, and added `--force` to
   sync commands for explicit refetch/rewrite/regenerate runs.
+- Documented every `speech_normalize_*` config key in the README and config
+  example.
 - Removed source URLs from `article.txt` and `article.rtf` body text so speech
   synthesis does not read article links aloud.
 - Added issue title and detected `di ...` author lines to generated article

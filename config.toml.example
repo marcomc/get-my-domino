@@ -24,6 +24,9 @@ audio_chunk_chars = 2500
 audio_chunk_concurrency = 3
 audio_chunk_retries = 2
 audio_stall_timeout = 45
+
+# Optional AI pre-processing before audio generation. Leave auto disabled for
+# the fully local pipeline; enable per command with --speech-normalize.
 speech_normalize_auto = false
 speech_normalize_agent = "codex"
 speech_normalize_command = "codex"
@@ -32,6 +35,7 @@ speech_normalize_timeout = 900
 speech_normalize_force = false
 speech_normalize_fallback = false
 speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
+
 export_formats = ["html", "txt"]
 
 # Authentication is read from this config file, not from browser extensions.
