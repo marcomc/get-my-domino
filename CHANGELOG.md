@@ -59,6 +59,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mode.
 - Handled `Ctrl-C` cleanly during downloads and speech synthesis, including
   terminating active subprocesses and removing temporary `.aiff` files.
+- Added configurable `audio_timeout` and `--audio-timeout` handling so stuck
+  `say`, `afconvert`, or `ffmpeg` subprocesses are stopped and temporary
+  `.aiff` files are removed.
+- Serialized macOS `say` synthesis across concurrent CLI processes to avoid
+  overlapping Siri/neural TTS extension runs.
+- Added visible queued/audio-engine status and temporary AIFF byte-growth
+  feedback while generating audio.
+- Added chunked audio synthesis for long articles, with configurable chunk
+  size, parallelism, retries, and stall timeout. Chunk AIFF files are merged
+  before the final M4A/MP3 conversion to avoid silent truncation from one long
+  `say` process.
+- Kept multi-article downloads and syncs running when one article audio
+  conversion fails, then reported all audio failures at the end.
 - Removed source URLs from `article.txt` and `article.rtf` body text so speech
   synthesis does not read article links aloud.
 - Added issue title and detected `di ...` author lines to generated article
