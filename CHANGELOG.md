@@ -79,6 +79,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   punctuation guidance for more natural TTS prosody without changing meaning.
 - Moved the Codex speech-normalization prompt into an installed, user-editable
   template file configured by `speech_normalize_prompt_path`.
+- Improved `sync-feed` output so it prints the feed destination folder and each
+  downloaded article directory instead of only article titles.
+- Made `sync-feed --audio` and `sync-magazine --audio` generate missing audio
+  for articles already present in the local manifest, and added `--force` to
+  sync commands for explicit refetch/rewrite/regenerate runs.
 - Removed source URLs from `article.txt` and `article.rtf` body text so speech
   synthesis does not read article links aloud.
 - Added issue title and detected `di ...` author lines to generated article

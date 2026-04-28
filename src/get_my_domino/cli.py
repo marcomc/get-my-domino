@@ -288,6 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_audio_options(sync_parser)
     _add_export_format_options(sync_parser)
     sync_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Redownload and rewrite exports and audio for already synced articles.",
+    )
+    sync_parser.add_argument(
         "--max-articles",
         type=int,
         help="Limit article downloads for smoke tests.",
@@ -300,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_audio_options(sync_feed_parser)
     _add_export_format_options(sync_feed_parser)
+    sync_feed_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Redownload and rewrite exports and audio for already synced feed articles.",
+    )
     sync_feed_parser.add_argument(
         "--max-articles",
         type=int,
@@ -1575,39 +1585,75 @@ def _download_new_articles(
     speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...],
     max_articles: int | None,
+    force: bool = False,
 ) -> int:
     client = WebClient(config)
     manifest = read_manifest(output_dir)
     next_index = len(manifest) + 1
     downloaded_dirs: list[Path] = []
+    audio_dirs: list[Path] = []
 
+    _print_feed_sync_header(output_dir)
     for article_link in article_links:
         if max_articles is not None and len(downloaded_dirs) >= max_articles:
             break
-        if article_link.url in manifest:
+        existing_dir = _existing_article_dir(manifest, article_link.url)
+        if existing_dir is not None and not force:
+            if create_audio:
+                audio_dirs.append(existing_dir)
+                _print_download_result(
+                    article_link.title,
+                    export_status="reused",
+                    audio_status="pending",
+                    elapsed="00:00",
+                    target_dir=existing_dir,
+                    verbose=True,
+                )
             continue
+        article_started_at = time.monotonic()
         article = client.download_article(article_link.url)
         article = replace(article, issue_title="La settimana di Domino")
-        target_dir = write_article_named(
-            output_dir,
-            article,
-            name=_feed_article_folder_name(article_link),
-            export_formats=export_formats,
-            metadata={
-                "feed": "La settimana di Domino",
-                "published_date": article_link.published_date,
-            },
-        )
+        if existing_dir is not None:
+            target_dir = existing_dir
+            write_article_export(
+                target_dir,
+                article,
+                export_formats=export_formats,
+                metadata={
+                    "feed": "La settimana di Domino",
+                    "published_date": article_link.published_date,
+                },
+            )
+        else:
+            target_dir = write_article_named(
+                output_dir,
+                article,
+                name=_feed_article_folder_name(article_link),
+                export_formats=export_formats,
+                metadata={
+                    "feed": "La settimana di Domino",
+                    "published_date": article_link.published_date,
+                },
+            )
         manifest[article.url] = str(target_dir)
         downloaded_dirs.append(target_dir)
-        print(f"downloaded: {article.title}")
+        if create_audio:
+            audio_dirs.append(target_dir)
+        _print_download_result(
+            article.title,
+            export_status="written",
+            audio_status="pending" if create_audio else "off",
+            elapsed=_format_duration(time.monotonic() - article_started_at),
+            target_dir=target_dir,
+            verbose=True,
+        )
         next_index += 1
 
     write_manifest(output_dir, manifest)
     audio_result = 0
     if create_audio:
         audio_result = _speak_paths(
-            downloaded_dirs,
+            audio_dirs,
             output_dir=config.output_dir,
             voice=config.siri_voice,
             audio_format=audio_format,
@@ -1621,6 +1667,15 @@ def _download_new_articles(
         )
     print(f"new_articles: {len(downloaded_dirs)}")
     return audio_result
+
+
+def _print_feed_sync_header(output_dir: Path) -> None:
+    title = "La settimana di Domino"
+    print(title)
+    print("=" * len(title))
+    print(f"folder: {output_dir}")
+    print()
+    print(_style_download_header())
 
 
 def _handle_sync(
@@ -1637,12 +1692,14 @@ def _handle_sync(
     speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...],
     max_articles: int | None,
+    force: bool = False,
 ) -> int:
     client = WebClient(config)
     issues = client.discover_issues()
     output_dir = config.output_dir
     manifest = read_manifest(output_dir)
     downloaded_dirs: list[Path] = []
+    audio_dirs: list[Path] = []
 
     for issue in issues:
         issue_detail = client.discover_issue(issue.url)
@@ -1654,30 +1711,45 @@ def _handle_sync(
         for article_link in issue_detail.articles:
             if max_articles is not None and len(downloaded_dirs) >= max_articles:
                 break
-            if article_link.url in manifest:
+            existing_dir = _existing_article_dir(manifest, article_link.url)
+            if existing_dir is not None and not force:
+                if create_audio:
+                    audio_dirs.append(existing_dir)
                 continue
             article = client.download_article(article_link.url)
             article = replace(article, issue_title=issue_detail.title)
             group_name = article_link.group or "Articoli"
             group_dir = issue_dir / _group_folder_name(group_name, group_indexes[group_name])
-            target_dir = write_article_named(
-                group_dir,
-                article,
-                name=_article_folder_name(
-                    article_link,
-                    fallback_index=article_link.order or len(downloaded_dirs) + 1,
-                ),
-                export_formats=export_formats,
-                metadata={
-                    "issue_title": issue_detail.title,
-                    "issue_month": issue_detail.published_month,
-                    "section": group_name,
-                    "order": article_link.order,
-                    "published_date": article_link.published_date,
-                },
-            )
+            metadata: dict[str, object] = {
+                "issue_title": issue_detail.title,
+                "issue_month": issue_detail.published_month,
+                "section": group_name,
+                "order": article_link.order,
+                "published_date": article_link.published_date,
+            }
+            if existing_dir is not None:
+                target_dir = existing_dir
+                write_article_export(
+                    target_dir,
+                    article,
+                    export_formats=export_formats,
+                    metadata=metadata,
+                )
+            else:
+                target_dir = write_article_named(
+                    group_dir,
+                    article,
+                    name=_article_folder_name(
+                        article_link,
+                        fallback_index=article_link.order or len(downloaded_dirs) + 1,
+                    ),
+                    export_formats=export_formats,
+                    metadata=metadata,
+                )
             manifest[article.url] = str(target_dir)
             downloaded_dirs.append(target_dir)
+            if create_audio:
+                audio_dirs.append(target_dir)
             print(f"  downloaded: {article.title}")
         if max_articles is not None and len(downloaded_dirs) >= max_articles:
             break
@@ -1686,7 +1758,7 @@ def _handle_sync(
     audio_result = 0
     if create_audio:
         audio_result = _speak_paths(
-            downloaded_dirs,
+            audio_dirs,
             output_dir=output_dir,
             voice=config.siri_voice,
             audio_format=audio_format,
@@ -1745,6 +1817,7 @@ def _handle_sync_feed(
     export_formats: tuple[str, ...],
     max_articles: int | None,
     pages: int,
+    force: bool = False,
 ) -> int:
     links = discover_feed_articles(config, max_pages=pages)
     return _download_new_articles(
@@ -1762,6 +1835,7 @@ def _handle_sync_feed(
         speech_options=speech_options,
         export_formats=export_formats,
         max_articles=max_articles,
+        force=force,
     )
 
 
@@ -2040,6 +2114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 speech_options=speech_options,
                 export_formats=export_formats,
                 max_articles=args.max_articles,
+                force=bool(args.force),
             )
         if args.command in {"sync-feed", "sync-weekly"}:
             audio_options = _audio_options(args, config)
@@ -2059,6 +2134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 export_formats=export_formats,
                 max_articles=args.max_articles,
                 pages=int(args.pages),
+                force=bool(args.force),
             )
         if args.command == "speak":
             voice = args.voice if args.voice is not None else config.siri_voice

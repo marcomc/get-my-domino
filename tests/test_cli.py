@@ -19,7 +19,7 @@ from get_my_domino.config import AppConfig, load_config
 from get_my_domino.extract import extract_article, extract_links
 from get_my_domino.models import Article, Link
 from get_my_domino.session_store import load_cookies, save_cookies
-from get_my_domino.storage import article_text_document, write_article
+from get_my_domino.storage import article_text_document, write_article, write_manifest
 from get_my_domino.web import WebClient
 
 
@@ -1446,6 +1446,97 @@ def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
     assert download_options.concurrency == 4
     assert download_options.retries == 1
     assert download_options.stall_timeout == 30.0
+
+
+def test_sync_feed_output_shows_destination_folder_and_article_paths(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    article_url = "https://www.rivistadomino.it/blog/2026/03/20/guerra-in-iran/"
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            assert url == article_url
+            return Article(
+                title="Che succede in Medio Oriente",
+                url=url,
+                html="<article>Test</article>",
+                text="Test",
+            )
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+
+    result = cli._download_new_articles(
+        [Link(title="Che succede in Medio Oriente", url=article_url)],
+        config=AppConfig(output_dir=tmp_path),
+        output_dir=tmp_path / "la-settimana-di-domino",
+        create_audio=False,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert f"folder: {tmp_path / 'la-settimana-di-domino'}" in captured.out
+    assert "Che succede in Medio Oriente" in captured.out
+    assert "written" in captured.out
+    assert "off" in captured.out
+    assert (
+        str(tmp_path / "la-settimana-di-domino" / "2026-03-20-che-succede-in-medio-oriente")
+        in captured.out
+    )
+
+
+def test_sync_feed_audio_includes_existing_manifest_articles(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    existing_dir = output_dir / "2026-03-20-che-succede-in-medio-oriente"
+    existing_dir.mkdir(parents=True)
+    (existing_dir / "article.txt").write_text("Test", encoding="utf-8")
+    article_url = "https://www.rivistadomino.it/blog/2026/03/20/guerra-in-iran/"
+    write_manifest(output_dir, {article_url: str(existing_dir)})
+    spoken: list[Path] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            raise AssertionError(f"should not redownload existing article: {url}")
+
+    def fake_speak_paths(paths: list[Path], **kwargs: object) -> int:
+        del kwargs
+        spoken.extend(paths)
+        return 0
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", fake_speak_paths)
+
+    result = cli._download_new_articles(
+        [Link(title="Che succede in Medio Oriente", url=article_url)],
+        config=AppConfig(output_dir=tmp_path),
+        output_dir=output_dir,
+        create_audio=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert spoken == [existing_dir]
+    assert "reused" in captured.out
+    assert "pending" in captured.out
+    assert str(existing_dir) in captured.out
+    assert "new_articles: 0" in captured.out
 
 
 def test_audio_timeout_must_be_positive() -> None:

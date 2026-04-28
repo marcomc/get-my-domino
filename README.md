@@ -230,8 +230,8 @@ Command intent:
 | --- | --- | --- |
 | `catalog` | Lists issues, issue contents, and feed entries | Human browsing before choosing what to download |
 | `download` | Downloads known targets by URL, one issue article, or one whole issue | Manual, targeted downloads and repairs |
-| `sync-magazine` | Scans every available magazine issue and downloads only missing articles | Periodic archive updates and automation |
-| `sync-feed` | Scans the recurring weekly feed and downloads only missing articles | Periodic weekly-feed updates and automation |
+| `sync-magazine` | Scans every available magazine issue and downloads only missing articles; with `--audio`, also generates missing audio for already synced articles | Periodic archive updates and automation |
+| `sync-feed` | Scans the recurring weekly feed and downloads only missing articles; with `--audio`, also generates missing audio for already synced feed articles | Periodic weekly-feed updates and automation |
 
 `download` is intentionally narrow: it does not scan the whole archive unless
 you select one issue with `--issue` and `--all`. `sync-magazine` is the
@@ -328,6 +328,8 @@ Scan all issues, skip articles already in the manifest, and download new text:
 
 ```bash
 get-my-domino sync-magazine
+get-my-domino sync-magazine --audio
+get-my-domino sync-magazine --audio --force
 ```
 
 Magazine articles are saved under:
@@ -360,7 +362,13 @@ Scan `La settimana di Domino` and save it under `output_dir/feed_folder_name`:
 ```bash
 get-my-domino sync-feed
 get-my-domino sync-feed --audio --pages 3
+get-my-domino sync-feed --audio --force
 ```
+
+`sync-feed --audio` and `sync-magazine --audio` also inspect articles already
+present in the local manifest and generate missing audio from local exports.
+Use `--force` on sync commands only when you want to refetch/rewrite existing
+article exports and regenerate their audio.
 
 Feed articles are saved with date-first names, for example:
 
