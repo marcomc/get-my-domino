@@ -13,6 +13,9 @@ SUPPORTED_EXPORT_FORMATS = ("html", "txt", "rtf")
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "get-my-domino" / "config.toml"
 DEFAULT_SESSION_PATH = Path.home() / ".config" / "get-my-domino" / "session.json"
+DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH = (
+    Path.home() / ".config" / "get-my-domino" / "speech-normalize-codex.txt"
+)
 DEFAULT_OUTPUT_DIR = Path.home() / "Documents" / "rivistadomino"
 
 
@@ -74,6 +77,7 @@ class AppConfig:
     speech_normalize_timeout: float = 900.0
     speech_normalize_force: bool = False
     speech_normalize_fallback: bool = False
+    speech_normalize_prompt_path: Path = DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH
     export_formats: tuple[str, ...] = ("html", "txt")
 
     @property
@@ -196,6 +200,9 @@ def load_config(path: Path) -> AppConfig:
         ),
         speech_normalize_force=bool(data.get("speech_normalize_force", False)),
         speech_normalize_fallback=bool(data.get("speech_normalize_fallback", False)),
+        speech_normalize_prompt_path=Path(
+            str(data.get("speech_normalize_prompt_path", DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH))
+        ).expanduser(),
         export_formats=normalize_export_formats(data.get("export_formats", ("html", "txt"))),
     )
 

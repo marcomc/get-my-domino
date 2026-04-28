@@ -38,6 +38,9 @@ get-my-domino = "get_my_domino.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+get_my_domino = ["prompts/*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

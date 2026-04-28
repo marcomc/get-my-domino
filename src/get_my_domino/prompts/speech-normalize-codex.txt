@@ -1,0 +1,69 @@
+You are preparing an Italian geopolitics article for macOS text-to-speech.
+Read the input text below and write only the corrected speech-ready text to this file:
+
+{output_path}
+
+Do not print the article text in your final answer. Do not emit markdown, XML, SSML,
+comments, explanations, or notes. Preserve meaning, facts, sequence, authorial style,
+wording, punctuation choices, and lexical choices. Do not summarize, translate,
+simplify, improve prose, modernize, copyedit, or add content.
+
+Only make minimal orthographic, punctuation, spacing, line-break, and
+pronunciation-oriented changes needed for natural Italian TTS.
+
+Hard constraints:
+
+- Preserve hyphenated expressions exactly unless the hyphen is clearly an extraction artifact.
+  For example, keep "cessate-il-fuoco" as "cessate-il-fuoco".
+- Preserve true parenthetical phrases exactly. For example, keep "(e non solo)" when it means
+  "and not only"; do not rewrite it as commas.
+- Preserve deliberate sentence fragments and rhetorical punctuation unless they cause a clear TTS
+  failure.
+- Do not repair grammar, agreement, or style. If a change would also be a copyedit, do not make it.
+- Never insert a comma between subject and predicate, predicate and direct object, noun and
+  restrictive relative clause, or a preposition and its complement.
+
+Rules:
+
+- Fix typographic wordplay that harms pronunciation when the intended spoken word is clear:
+  "(ri)tornava" -> "ritornava"; "transita(va)" -> "transitava" when the context is past tense;
+  "Donald(o)" -> "Donaldo" when it is a deliberate spoken pun.
+- Repair extraction line breaks. Rejoin isolated one-word or short foreign terms when they
+  syntactically belong to the surrounding sentence, for example "prossima al\n\nJahannam\n\n."
+  should become "prossima al Jahannam."
+- Rejoin inline extraction artifacts where typography split one phrase into separate blocks:
+  isolated punctuation, parentheses, quotation marks, italicized foreign terms, and short inline
+  expressions such as "intelligence", "pasdaran", "regime change", or "I Ching" must be restored
+  inside the surrounding sentence when they are not real headings.
+- Convert dash inserts that sound unnatural only when equivalent, for example
+  "– si fa per dire –" -> "(si fa per dire),".
+- Restore Italian stress marks only when context strongly disambiguates pronunciation:
+  "i princìpi della geopolitica" versus "i prìncipi sauditi"; "subìto" only when it means
+  suffered; "ancóra" only when the intended stress requires it. Leave uncertain cases unchanged.
+- Preserve foreign names, transliterations, original scripts, and geopolitical terms.
+- For English or loan expressions likely to be misread by Italian TTS, apply only conservative
+  plain-text pronunciation aids that remain readable and do not alter meaning.
+
+Conservative Italian punctuation guidance for TTS prosody:
+
+- Treat punctuation as syntactic guidance for the voice, not as a rewrite. Add or adjust commas
+  only when they mark a real short pause already licensed by Italian syntax.
+- A comma may isolate an inciso, apposition, vocative, or parenthetical aside when both the opening
+  and closing boundary are clear.
+- A comma may separate coordinated clauses, enumerations, or a non-restrictive/appositive relative
+  clause. Do not add a comma before a restrictive relative clause.
+- Prefer preserving the author's punctuation. When a long sentence is monotonous but syntactically
+  valid, you may add one conservative comma or semicolon at a natural clause boundary; leave it
+  unchanged if the boundary is doubtful.
+- Use a semicolon only to separate two closely related clauses when a comma would be too weak and
+  a full stop would over-segment the author's sentence.
+- Use a colon only when the second clause explains, specifies, or lists what precedes it.
+- Do not add expressive punctuation for drama, emphasis, or rhythm alone. Do not change the
+  sentence type, cadence, irony, or argumentative force.
+
+Input source path for traceability: {source_text_path}
+
+Input text:
+<<<GET_MY_DOMINO_SPEECH_INPUT
+{normalized_text}
+GET_MY_DOMINO_SPEECH_INPUT

@@ -31,6 +31,7 @@ speech_normalize_model = ""
 speech_normalize_timeout = 900
 speech_normalize_force = false
 speech_normalize_fallback = false
+speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
 export_formats = ["html", "txt"]
 
 # Authentication is read from this config file, not from browser extensions.

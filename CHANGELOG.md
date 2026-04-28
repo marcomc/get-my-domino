@@ -75,6 +75,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added optional AI-assisted speech text normalization, disabled by default,
   with a generic agent configuration and an implemented `codex exec` backend
   that writes `<article-basename>.speech.txt` before audio synthesis.
+- Tightened the AI speech normalization prompt with conservative Italian
+  punctuation guidance for more natural TTS prosody without changing meaning.
+- Moved the Codex speech-normalization prompt into an installed, user-editable
+  template file configured by `speech_normalize_prompt_path`.
 - Removed source URLs from `article.txt` and `article.rtf` body text so speech
   synthesis does not read article links aloud.
 - Added issue title and detected `di ...` author lines to generated article

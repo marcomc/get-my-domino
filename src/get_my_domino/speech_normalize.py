@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib.resources import files
 from pathlib import Path
 
 SPEECH_PROMPT_VERSION = "2026-04-28.1"
@@ -28,6 +29,7 @@ class SpeechNormalizeSettings:
     timeout: float
     force: bool
     fallback: bool
+    prompt_path: Path | None = None
     diff: bool = False
 
 
@@ -111,6 +113,7 @@ def _run_codex_normalizer(
         source_text_path=source_text_path,
         output_path=output_path,
         normalized_text=normalized_text,
+        prompt_path=settings.prompt_path,
     )
     command = [
         command_path,
@@ -120,10 +123,8 @@ def _run_codex_normalizer(
         str(source_text_path.parent),
         "--sandbox",
         "workspace-write",
-        "--ask-for-approval",
-        "never",
         "--output-last-message",
-        str(log_path.with_suffix(".speech.last-message.txt")),
+        str(source_text_path.with_suffix(".speech.last-message.txt")),
     ]
     if settings.model:
         command.extend(["-m", settings.model])
@@ -143,6 +144,7 @@ def _run_codex_normalizer(
                 f"timestamp: {datetime.now(UTC).isoformat(timespec='seconds')}",
                 f"agent: {settings.agent}",
                 f"command: {' '.join(command)}",
+                f"prompt_path: {settings.prompt_path or 'packaged default'}",
                 f"source_sha256: {_sha256_text(normalized_text)}",
                 f"returncode: {result.returncode}",
                 "",
@@ -159,42 +161,29 @@ def _run_codex_normalizer(
         raise SpeechNormalizeError(f"codex normalizer failed with exit code {result.returncode}")
 
 
-def _codex_prompt(*, source_text_path: Path, output_path: Path, normalized_text: str) -> str:
-    return f"""You are preparing an Italian geopolitics article for macOS text-to-speech.
-Read the input text below and write only the corrected speech-ready text to this file:
+def _codex_prompt(
+    *,
+    source_text_path: Path,
+    output_path: Path,
+    normalized_text: str,
+    prompt_path: Path | None,
+) -> str:
+    template = _read_prompt_template(prompt_path)
+    return template.format(
+        source_text_path=source_text_path,
+        output_path=output_path,
+        normalized_text=normalized_text,
+    )
 
-{output_path}
 
-Do not print the article text in your final answer. Do not emit markdown, XML, SSML,
-comments, explanations, or notes. Preserve meaning, facts, sequence, authorial style,
-and wording. Do not summarize, translate, simplify, or add content.
-
-Only make minimal orthographic, punctuation, spacing, line-break, and
-pronunciation-oriented changes needed for natural Italian TTS.
-
-Rules:
-- Fix typographic wordplay that harms pronunciation when the intended spoken word is clear:
-  "(ri)tornava" -> "ritornava"; "transita(va)" -> "transitava" when the context is past tense;
-  "Donald(o)" -> "Donaldo" when it is a deliberate spoken pun.
-- Repair extraction line breaks. Rejoin isolated one-word or short foreign terms when they
-  syntactically belong to the surrounding sentence, for example "prossima al\\n\\nJahannam\\n\\n."
-  should become "prossima al Jahannam."
-- Convert dash inserts that sound unnatural only when equivalent, for example
-  "– si fa per dire –" -> "(si fa per dire),".
-- Restore Italian stress marks only when context strongly disambiguates pronunciation:
-  "i princìpi della geopolitica" versus "i prìncipi sauditi"; "subìto" only when it means
-  suffered; "ancóra" only when the intended stress requires it. Leave uncertain cases unchanged.
-- Preserve foreign names, transliterations, original scripts, and geopolitical terms.
-- For English or loan expressions likely to be misread by Italian TTS, apply only conservative
-  plain-text pronunciation aids that remain readable and do not alter meaning.
-
-Input source path for traceability: {source_text_path}
-
-Input text:
-<<<GET_MY_DOMINO_SPEECH_INPUT
-{normalized_text}
-GET_MY_DOMINO_SPEECH_INPUT
-"""
+def _read_prompt_template(prompt_path: Path | None) -> str:
+    if prompt_path is not None and prompt_path.exists():
+        return prompt_path.read_text(encoding="utf-8")
+    return (
+        files("get_my_domino.prompts")
+        .joinpath("speech-normalize-codex.txt")
+        .read_text(encoding="utf-8")
+    )
 
 
 def _mechanical_prepass(text: str) -> str:

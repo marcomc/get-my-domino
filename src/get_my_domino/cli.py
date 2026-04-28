@@ -100,6 +100,7 @@ class SpeechNormalizeOptions:
     timeout: float
     force: bool
     fallback: bool
+    prompt_path: Path | None
     diff: bool = False
 
 
@@ -486,6 +487,11 @@ def _add_speech_normalize_options(parser: argparse.ArgumentParser) -> None:
         default=False,
         help="Use the original .txt if AI speech normalization fails.",
     )
+    parser.add_argument(
+        "--speech-normalize-prompt",
+        type=Path,
+        help="Prompt template file passed to the selected speech normalization agent.",
+    )
 
 
 def _add_export_format_options(parser: argparse.ArgumentParser) -> None:
@@ -562,6 +568,8 @@ def _speech_normalize_options(
         force=bool(getattr(args, "speech_normalize_force", False)) or config.speech_normalize_force,
         fallback=bool(getattr(args, "speech_normalize_fallback", False))
         or config.speech_normalize_fallback,
+        prompt_path=getattr(args, "speech_normalize_prompt", None)
+        or config.speech_normalize_prompt_path,
         diff=diff,
     )
 
@@ -575,6 +583,7 @@ def _speech_settings(options: SpeechNormalizeOptions) -> SpeechNormalizeSettings
         timeout=options.timeout,
         force=options.force,
         fallback=options.fallback,
+        prompt_path=options.prompt_path,
         diff=options.diff,
     )
 
@@ -895,6 +904,7 @@ def _handle_info(config: AppConfig, config_path: Path, as_json: bool) -> int:
     print(f"speech_normalize_timeout: {config.speech_normalize_timeout}")
     print(f"speech_normalize_force: {config.speech_normalize_force}")
     print(f"speech_normalize_fallback: {config.speech_normalize_fallback}")
+    print(f"speech_normalize_prompt_path: {config.speech_normalize_prompt_path}")
     print(f"export_formats: {', '.join(config.export_formats)}")
     print(f"auth_login_url: {config.auth_login_url}")
     print(f"auth_username: {_auth_username_display(config.auth_username)}")
@@ -1819,7 +1829,8 @@ def _handle_speech_normalize(
     speech_options: SpeechNormalizeOptions,
 ) -> int:
     for text_path in text_paths:
-        result = normalize_speech_text(text_path, _speech_settings(speech_options))
+        with _progress_step(f"Preparing speech text {text_path.name}"):
+            result = normalize_speech_text(text_path, _speech_settings(speech_options))
         print(f"speech: {result.path}")
         if result.diff_text:
             print(result.diff_text, end="")
@@ -1854,10 +1865,11 @@ def _ensure_audio(
         return "reused", output_path
     speech_source_path = text_path
     if speech_options is not None and speech_options.enabled:
-        speech_source_path = ensure_speech_text(
-            text_path,
-            options=speech_options,
-        )
+        with _progress_step(f"Preparing speech text {text_path.name}"):
+            speech_source_path = ensure_speech_text(
+                text_path,
+                options=speech_options,
+            )
     with _audio_progress_step(f"Generating audio {output_path.name}") as progress:
         synthesize_audio(
             speech_source_path,

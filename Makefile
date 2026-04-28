@@ -15,6 +15,8 @@ APP_VENV ?= $(APP_HOME)/venv
 APP_PYTHON ?= $(APP_VENV)/bin/python
 CONFIG_DIR ?= $(HOME)/.config/$(CONFIG_NAME)
 CONFIG_PATH ?= $(CONFIG_DIR)/config.toml
+SPEECH_PROMPT_PATH ?= $(CONFIG_DIR)/speech-normalize-codex.txt
+SPEECH_PROMPT_TEMPLATE ?= src/$(PACKAGE_NAME)/prompts/speech-normalize-codex.txt
 MARKDOWN_FILES := README.md CHANGELOG.md TODO.md AGENTS.md docs/*.md
 
 .DEFAULT_GOAL := help
@@ -66,6 +68,12 @@ install-config: ## Install the example config file if missing
 		echo "Installed config template to $(CONFIG_PATH)"; \
 	else \
 		echo "Config already exists at $(CONFIG_PATH)"; \
+	fi
+	@if [ ! -f "$(SPEECH_PROMPT_PATH)" ]; then \
+		cp "$(SPEECH_PROMPT_TEMPLATE)" "$(SPEECH_PROMPT_PATH)"; \
+		echo "Installed speech normalization prompt to $(SPEECH_PROMPT_PATH)"; \
+	else \
+		echo "Speech normalization prompt already exists at $(SPEECH_PROMPT_PATH)"; \
 	fi
 
 uninstall: ## Remove the standalone runtime and user-facing symlink

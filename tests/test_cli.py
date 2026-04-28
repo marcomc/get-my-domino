@@ -243,6 +243,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
                 "speech_normalize_timeout = 456",
                 "speech_normalize_force = true",
                 "speech_normalize_fallback = true",
+                'speech_normalize_prompt_path = "~/custom-prompt.md"',
                 'siri_voice = "Siri Voice 2"',
                 "",
             ]
@@ -267,6 +268,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
     assert config.speech_normalize_timeout == 456.0
     assert config.speech_normalize_force is True
     assert config.speech_normalize_fallback is True
+    assert config.speech_normalize_prompt_path == Path.home() / "custom-prompt.md"
     assert config.siri_voice == "Siri Voice 2"
 
 
@@ -1468,6 +1470,7 @@ def test_speech_normalize_cli_options_default_to_config_and_allow_overrides() ->
         speech_normalize_timeout=456.0,
         speech_normalize_force=False,
         speech_normalize_fallback=False,
+        speech_normalize_prompt_path=Path("/tmp/default-prompt.md"),
     )
 
     sync_args = parser.parse_args(["sync-magazine"])
@@ -1479,6 +1482,7 @@ def test_speech_normalize_cli_options_default_to_config_and_allow_overrides() ->
     assert sync_options.timeout == 456.0
     assert sync_options.force is False
     assert sync_options.fallback is False
+    assert sync_options.prompt_path == Path("/tmp/default-prompt.md")
 
     disabled_args = parser.parse_args(
         ["download", "https://example.test/a", "--no-speech-normalize"]
@@ -1500,6 +1504,8 @@ def test_speech_normalize_cli_options_default_to_config_and_allow_overrides() ->
             "789",
             "--speech-normalize-force",
             "--speech-normalize-fallback",
+            "--speech-normalize-prompt",
+            "/tmp/custom-prompt.md",
         ]
     )
     override_options = cli._speech_normalize_options(override_args, AppConfig())
@@ -1509,6 +1515,7 @@ def test_speech_normalize_cli_options_default_to_config_and_allow_overrides() ->
     assert override_options.timeout == 789.0
     assert override_options.force is True
     assert override_options.fallback is True
+    assert override_options.prompt_path == Path("/tmp/custom-prompt.md")
 
 
 def test_format_duration_uses_minutes_and_hours() -> None:
@@ -1681,6 +1688,7 @@ def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
             timeout=900.0,
             force=False,
             fallback=False,
+            prompt_path=None,
             diff=False,
         ),
     )
@@ -1697,6 +1705,7 @@ def test_codex_speech_normalizer_invokes_cli_without_printing_article(
     source.write_text("prossima al\n\nJahannam\n\n. Peggio.", encoding="utf-8")
     output = tmp_path / "001-editoriale.speech.txt"
     commands: list[list[str]] = []
+    prompts: list[str] = []
 
     def fake_run(
         command: list[str],
@@ -1707,8 +1716,9 @@ def test_codex_speech_normalizer_invokes_cli_without_printing_article(
         timeout: float,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
-        del input, text, capture_output, timeout, check
+        del text, capture_output, timeout, check
         commands.append(command)
+        prompts.append(input)
         output.write_text("prossima al Jahannam.\nPeggio.", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
 
@@ -1724,6 +1734,7 @@ def test_codex_speech_normalizer_invokes_cli_without_printing_article(
             timeout=123.0,
             force=False,
             fallback=False,
+            prompt_path=None,
             diff=False,
         ),
     )
@@ -1735,6 +1746,9 @@ def test_codex_speech_normalizer_invokes_cli_without_printing_article(
     assert commands[0][1] == "exec"
     assert "-m" in commands[0]
     assert "gpt-5.2" in commands[0]
+    assert "Conservative Italian punctuation guidance for TTS prosody" in prompts[0]
+    assert "Never insert a comma between subject and predicate" in prompts[0]
+    assert "Do not add expressive punctuation for drama" in prompts[0]
     assert (tmp_path / "001-editoriale.speech.log").exists()
 
 
@@ -1753,11 +1767,59 @@ def test_speech_normalizer_rejects_unimplemented_agents(tmp_path: Path) -> None:
                 timeout=123.0,
                 force=False,
                 fallback=False,
+                prompt_path=None,
                 diff=False,
             ),
         )
 
     assert "not implemented" in str(exc.value)
+
+
+def test_codex_speech_normalizer_uses_custom_prompt_file(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text(
+        "Write {source_text_path} to {output_path} using {normalized_text}",
+        encoding="utf-8",
+    )
+    prompts: list[str] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, text, capture_output, timeout, check
+        prompts.append(input)
+        output.write_text("Titolo", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            prompt_path=prompt_path,
+            diff=False,
+        ),
+    )
+
+    assert prompts == [f"Write {source} to {output} using Titolo\n"]
 
 
 def test_synthesize_mp3_uses_ffmpeg_after_say(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

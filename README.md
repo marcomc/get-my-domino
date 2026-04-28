@@ -74,6 +74,8 @@ make install
 - links the command to `~/.local/bin/get-my-domino`
 - installs a config template to `~/.config/get-my-domino/config.toml` if it
   does not exist yet
+- installs the editable speech-normalization prompt to
+  `~/.config/get-my-domino/speech-normalize-codex.txt` if it does not exist yet
 
 If `~/.local/bin` is not on your `PATH`, `make check-deps` prints the shell
 snippet to add it.
@@ -140,6 +142,7 @@ speech_normalize_model = ""
 speech_normalize_timeout = 900
 speech_normalize_force = false
 speech_normalize_fallback = false
+speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
 export_formats = ["html", "txt"]
 siri_voice = ""
 auth_login_url = "https://www.rivistadomino.it/mio-account/"
@@ -394,7 +397,16 @@ structured for future backends (`codex-cloud`, `github-cli`, `github-copilot`,
 and `jelly`), but those agents currently fail with a clear “not implemented”
 message. When enabled, the CLI writes `<article-basename>.speech.txt` beside
 the original `.txt` export and sends that speech-ready file to macOS `say`.
-The original `.txt` remains unchanged.
+The original `.txt` remains unchanged. The prompt also allows conservative
+Italian punctuation fixes for TTS prosody, for example closing clear incisi or
+adding a comma at a real clause boundary, but forbids punctuation changes that
+would alter syntax or meaning.
+
+The default prompt is installed as a user-editable file at
+`~/.config/get-my-domino/speech-normalize-codex.txt`. Set
+`speech_normalize_prompt_path` or pass `--speech-normalize-prompt` to use a
+different prompt template. The template must keep the placeholders
+`{output_path}`, `{source_text_path}`, and `{normalized_text}`.
 
 List the exact voice names that macOS `say` accepts:
 

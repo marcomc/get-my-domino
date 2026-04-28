@@ -153,6 +153,10 @@
       "type": "boolean",
       "default": false
     },
+    "speech_normalize_prompt_path": {
+      "type": "string",
+      "default": "~/.config/get-my-domino/speech-normalize-codex.txt"
+    },
     "export_formats": {
       "oneOf": [
         {
