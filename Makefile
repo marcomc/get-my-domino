@@ -44,7 +44,7 @@ sync: $(VENV)/bin/python ## Sync the project environment
 
 install: check-deps ## Install a standalone user-facing runtime
 	@mkdir -p "$(APP_HOME)"
-	@"$(UV)" venv --python "$(PYTHON_VERSION)" "$(APP_VENV)"
+	@"$(UV)" venv --allow-existing --python "$(PYTHON_VERSION)" "$(APP_VENV)"
 	@"$(UV)" pip install --python "$(APP_PYTHON)" .
 	@$(MAKE) install-link install-config
 
@@ -91,4 +91,3 @@ run: sync ## Show the CLI help from the dev environment
 
 clean: ## Remove local development artifacts
 	rm -rf "$(VENV)" .pytest_cache .mypy_cache .ruff_cache build dist src/*.egg-info *.egg-info
-

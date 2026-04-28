@@ -11,19 +11,35 @@ import sys
 import textwrap
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
 from . import __version__
 from .audio import AudioError, available_say_voices, normalize_audio_format, synthesize_audio
 from .browser_auth import BrowserAuthError, login_with_browser
-from .config import DEFAULT_CONFIG_PATH, AppConfig, load_config, normalize_export_formats
+from .config import (
+    DEFAULT_CONFIG_PATH,
+    AppConfig,
+    load_config,
+    normalize_audio_timeout,
+    normalize_export_formats,
+    normalize_non_negative_int,
+    normalize_positive_int,
+)
 from .extract import article_date_from_url, issue_month_from_text, slugify
 from .models import Article, Issue, Link
 from .session_store import clear_cookies
+from .speech_normalize import (
+    SpeechNormalizeError,
+    SpeechNormalizeSettings,
+    normalize_speech_text,
+)
+from .speech_normalize import (
+    ensure_speech_text as _ensure_speech_text,
+)
 from .storage import (
     article_basename,
     article_text_path,
@@ -51,8 +67,40 @@ COMMAND_NAMES = (
     "sync-feed",
     "sync-weekly",
     "speak",
+    "speech-normalize",
     "voices",
 )
+
+
+@dataclass(frozen=True)
+class AudioOptions:
+    create: bool
+    audio_format: str
+    timeout: float
+    chunked: bool
+    chunk_chars: int
+    concurrency: int
+    retries: int
+    stall_timeout: float
+
+
+@dataclass(frozen=True)
+class AudioFailure:
+    label: str
+    target_dir: Path
+    error: str
+
+
+@dataclass(frozen=True)
+class SpeechNormalizeOptions:
+    enabled: bool
+    agent: str
+    command: str
+    model: str
+    timeout: float
+    force: bool
+    fallback: bool
+    diff: bool = False
 
 
 def format_main_help() -> str:
@@ -67,6 +115,7 @@ def format_main_help() -> str:
             "  download      Download selected URLs or articles from one issue",
             "  sync-magazine Download new magazine articles",
             "  sync-feed     Download new weekly feed articles",
+            "  speech-normalize Prepare downloaded text for text-to-speech",
             "  speak         Convert downloaded article text to audio",
             "  voices        List macOS say voices available for audio",
             "",
@@ -278,6 +327,56 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["m4a", "mp4a", "mp3"],
         help="Audio file format. Defaults to config audio_format.",
     )
+    speak_parser.add_argument(
+        "--audio-timeout",
+        type=float,
+        help="Seconds before stopping a stuck audio command. Defaults to config audio_timeout.",
+    )
+    speak_parser.add_argument(
+        "--audio-jobs",
+        type=int,
+        help="Number of article audio chunks to synthesize in parallel. Defaults to config.",
+    )
+    speak_parser.add_argument(
+        "--audio-chunk-chars",
+        type=int,
+        help="Target characters per audio chunk. Defaults to config audio_chunk_chars.",
+    )
+    speak_parser.add_argument(
+        "--audio-retries",
+        type=int,
+        help="Retries for a failed audio chunk. Defaults to config audio_chunk_retries.",
+    )
+    speak_parser.add_argument(
+        "--audio-stall-timeout",
+        type=float,
+        help="Seconds without AIFF growth before retrying a chunk. Defaults to config.",
+    )
+    speak_parser.add_argument(
+        "--no-audio-chunks",
+        action="store_true",
+        default=False,
+        help="Use one macOS say process for the whole article.",
+    )
+    _add_speech_normalize_options(speak_parser)
+
+    speech_parser = subparsers.add_parser(
+        "speech-normalize",
+        help="Prepare downloaded text files for text-to-speech with an AI agent.",
+    )
+    speech_parser.add_argument(
+        "paths",
+        nargs="+",
+        type=Path,
+        help="Article text files or article directories to normalize.",
+    )
+    speech_parser.add_argument(
+        "--diff",
+        action="store_true",
+        default=False,
+        help="Print a unified diff after writing the speech-ready text.",
+    )
+    _add_speech_normalize_options(speech_parser)
 
     voices_parser = subparsers.add_parser(
         "voices",
@@ -310,6 +409,83 @@ def _add_audio_options(parser: argparse.ArgumentParser) -> None:
         choices=["m4a", "mp4a", "mp3"],
         help="Audio file format. Defaults to config audio_format.",
     )
+    parser.add_argument(
+        "--audio-timeout",
+        type=float,
+        help="Seconds before stopping a stuck audio command. Defaults to config audio_timeout.",
+    )
+    parser.add_argument(
+        "--audio-jobs",
+        type=int,
+        help="Number of article audio chunks to synthesize in parallel. Defaults to config.",
+    )
+    parser.add_argument(
+        "--audio-chunk-chars",
+        type=int,
+        help="Target characters per audio chunk. Defaults to config audio_chunk_chars.",
+    )
+    parser.add_argument(
+        "--audio-retries",
+        type=int,
+        help="Retries for a failed audio chunk. Defaults to config audio_chunk_retries.",
+    )
+    parser.add_argument(
+        "--audio-stall-timeout",
+        type=float,
+        help="Seconds without AIFF growth before retrying a chunk. Defaults to config.",
+    )
+    parser.add_argument(
+        "--no-audio-chunks",
+        action="store_true",
+        default=False,
+        help="Use one macOS say process for the whole article.",
+    )
+    _add_speech_normalize_options(parser)
+
+
+def _add_speech_normalize_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--speech-normalize",
+        action="store_true",
+        default=False,
+        help="Create and use a speech-ready .speech.txt file before audio synthesis.",
+    )
+    parser.add_argument(
+        "--no-speech-normalize",
+        action="store_true",
+        default=False,
+        help="Disable speech normalization even when config enables it.",
+    )
+    parser.add_argument(
+        "--speech-normalize-agent",
+        choices=["codex", "codex-cloud", "github-cli", "github-copilot", "jelly"],
+        help="AI agent backend. Only codex is implemented now.",
+    )
+    parser.add_argument(
+        "--speech-normalize-command",
+        help="CLI command used by the selected speech normalization agent.",
+    )
+    parser.add_argument(
+        "--speech-normalize-model",
+        help="Model name passed to the selected speech normalization agent.",
+    )
+    parser.add_argument(
+        "--speech-normalize-timeout",
+        type=float,
+        help="Seconds before stopping the AI speech normalization command.",
+    )
+    parser.add_argument(
+        "--speech-normalize-force",
+        action="store_true",
+        default=False,
+        help="Regenerate .speech.txt even when it already exists.",
+    )
+    parser.add_argument(
+        "--speech-normalize-fallback",
+        action="store_true",
+        default=False,
+        help="Use the original .txt if AI speech normalization fails.",
+    )
 
 
 def _add_export_format_options(parser: argparse.ArgumentParser) -> None:
@@ -325,13 +501,90 @@ def _add_export_format_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _audio_options(args: argparse.Namespace, config: AppConfig) -> tuple[bool, str]:
+def _audio_options(args: argparse.Namespace, config: AppConfig) -> AudioOptions:
     if bool(getattr(args, "no_audio", False)):
         create_audio = False
     else:
         create_audio = bool(getattr(args, "audio", False)) or config.audio_auto
     raw_format = str(getattr(args, "audio_format", None) or config.audio_format)
-    return create_audio, normalize_audio_format(raw_format)
+    raw_timeout = getattr(args, "audio_timeout", None)
+    audio_timeout = normalize_audio_timeout(
+        config.audio_timeout if raw_timeout is None else raw_timeout
+    )
+    raw_jobs = getattr(args, "audio_jobs", None)
+    raw_chunk_chars = getattr(args, "audio_chunk_chars", None)
+    raw_retries = getattr(args, "audio_retries", None)
+    raw_stall_timeout = getattr(args, "audio_stall_timeout", None)
+    return AudioOptions(
+        create=create_audio,
+        audio_format=normalize_audio_format(raw_format),
+        timeout=audio_timeout,
+        chunked=config.audio_chunked and not bool(getattr(args, "no_audio_chunks", False)),
+        chunk_chars=normalize_positive_int(
+            config.audio_chunk_chars if raw_chunk_chars is None else raw_chunk_chars,
+            key="audio_chunk_chars",
+        ),
+        concurrency=normalize_positive_int(
+            config.audio_chunk_concurrency if raw_jobs is None else raw_jobs,
+            key="audio_chunk_concurrency",
+        ),
+        retries=normalize_non_negative_int(
+            config.audio_chunk_retries if raw_retries is None else raw_retries,
+            key="audio_chunk_retries",
+        ),
+        stall_timeout=normalize_audio_timeout(
+            config.audio_stall_timeout if raw_stall_timeout is None else raw_stall_timeout
+        ),
+    )
+
+
+def _speech_normalize_options(
+    args: argparse.Namespace,
+    config: AppConfig,
+    *,
+    diff: bool = False,
+) -> SpeechNormalizeOptions:
+    if bool(getattr(args, "no_speech_normalize", False)):
+        enabled = False
+    else:
+        enabled = bool(getattr(args, "speech_normalize", False)) or config.speech_normalize_auto
+    raw_timeout = getattr(args, "speech_normalize_timeout", None)
+    return SpeechNormalizeOptions(
+        enabled=enabled,
+        agent=str(getattr(args, "speech_normalize_agent", None) or config.speech_normalize_agent),
+        command=str(
+            getattr(args, "speech_normalize_command", None) or config.speech_normalize_command
+        ),
+        model=str(getattr(args, "speech_normalize_model", None) or config.speech_normalize_model),
+        timeout=normalize_audio_timeout(
+            config.speech_normalize_timeout if raw_timeout is None else raw_timeout
+        ),
+        force=bool(getattr(args, "speech_normalize_force", False)) or config.speech_normalize_force,
+        fallback=bool(getattr(args, "speech_normalize_fallback", False))
+        or config.speech_normalize_fallback,
+        diff=diff,
+    )
+
+
+def _speech_settings(options: SpeechNormalizeOptions) -> SpeechNormalizeSettings:
+    return SpeechNormalizeSettings(
+        enabled=options.enabled,
+        agent=options.agent,
+        command=options.command,
+        model=options.model,
+        timeout=options.timeout,
+        force=options.force,
+        fallback=options.fallback,
+        diff=options.diff,
+    )
+
+
+def ensure_speech_text(
+    source_text_path: Path,
+    *,
+    options: SpeechNormalizeOptions,
+) -> Path:
+    return _ensure_speech_text(source_text_path, _speech_settings(options))
 
 
 def _export_format_options(args: argparse.Namespace, config: AppConfig) -> tuple[str, ...]:
@@ -630,6 +883,18 @@ def _handle_info(config: AppConfig, config_path: Path, as_json: bool) -> int:
     print(f"siri_voice: {config.siri_voice or ''}")
     print(f"audio_auto: {config.audio_auto}")
     print(f"audio_format: {config.audio_format}")
+    print(f"audio_chunked: {config.audio_chunked}")
+    print(f"audio_chunk_chars: {config.audio_chunk_chars}")
+    print(f"audio_chunk_concurrency: {config.audio_chunk_concurrency}")
+    print(f"audio_chunk_retries: {config.audio_chunk_retries}")
+    print(f"audio_stall_timeout: {config.audio_stall_timeout}")
+    print(f"speech_normalize_auto: {config.speech_normalize_auto}")
+    print(f"speech_normalize_agent: {config.speech_normalize_agent}")
+    print(f"speech_normalize_command: {config.speech_normalize_command}")
+    print(f"speech_normalize_model: {config.speech_normalize_model}")
+    print(f"speech_normalize_timeout: {config.speech_normalize_timeout}")
+    print(f"speech_normalize_force: {config.speech_normalize_force}")
+    print(f"speech_normalize_fallback: {config.speech_normalize_fallback}")
     print(f"export_formats: {', '.join(config.export_formats)}")
     print(f"auth_login_url: {config.auth_login_url}")
     print(f"auth_username: {_auth_username_display(config.auth_username)}")
@@ -674,6 +939,13 @@ def _download_articles(
     *,
     create_audio: bool,
     audio_format: str,
+    audio_timeout: float,
+    audio_chunked: bool = True,
+    audio_chunk_chars: int = 2500,
+    audio_concurrency: int = 3,
+    audio_retries: int = 2,
+    audio_stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...] | None = None,
     force: bool = False,
     issue_titles: dict[str, str] | None = None,
@@ -684,6 +956,7 @@ def _download_articles(
     selected_formats = export_formats or config.export_formats
     manifest = read_manifest(output_dir)
     next_index = len(manifest) + 1
+    audio_failures: list[AudioFailure] = []
     print(_style_download_header())
     for article_url in article_urls:
         article_started_at = time.monotonic()
@@ -716,12 +989,21 @@ def _download_articles(
             else:
                 export_status = "reused"
             if create_audio:
-                audio_status, _ = _ensure_audio(
+                audio_status = _ensure_audio_for_download(
                     target_dir,
                     output_dir=output_dir,
                     voice=config.siri_voice,
                     audio_format=audio_format,
+                    timeout=audio_timeout,
                     force=force,
+                    failures=audio_failures,
+                    label=article_label,
+                    chunked=audio_chunked,
+                    chunk_chars=audio_chunk_chars,
+                    concurrency=audio_concurrency,
+                    retries=audio_retries,
+                    stall_timeout=audio_stall_timeout,
+                    speech_options=speech_options,
                 )
             _print_download_result(
                 article_label,
@@ -768,12 +1050,21 @@ def _download_articles(
         manifest[article.url] = str(target_dir)
         export_status = "written"
         if create_audio:
-            audio_status, _ = _ensure_audio(
+            audio_status = _ensure_audio_for_download(
                 target_dir,
                 output_dir=output_dir,
                 voice=config.siri_voice,
                 audio_format=audio_format,
+                timeout=audio_timeout,
                 force=force,
+                failures=audio_failures,
+                label=article.title,
+                chunked=audio_chunked,
+                chunk_chars=audio_chunk_chars,
+                concurrency=audio_concurrency,
+                retries=audio_retries,
+                stall_timeout=audio_stall_timeout,
+                speech_options=speech_options,
             )
         _print_download_result(
             article.title,
@@ -784,6 +1075,9 @@ def _download_articles(
             verbose=config.verbose,
         )
     write_manifest(output_dir, manifest)
+    if audio_failures:
+        _print_audio_failures(audio_failures)
+        return 1
     return 0
 
 
@@ -822,7 +1116,55 @@ def _style_status(status: str) -> str:
         return _style_info(status)
     if status == "off":
         return _style_muted(status)
+    if status == "failed":
+        return _ansi(status, "31")
     return status
+
+
+def _ensure_audio_for_download(
+    raw_path: Path,
+    *,
+    output_dir: Path,
+    voice: str | None,
+    audio_format: str,
+    timeout: float,
+    force: bool,
+    failures: list[AudioFailure],
+    label: str,
+    chunked: bool,
+    chunk_chars: int,
+    concurrency: int,
+    retries: int,
+    stall_timeout: float,
+    speech_options: SpeechNormalizeOptions | None,
+) -> str:
+    try:
+        status, _ = _ensure_audio(
+            raw_path,
+            output_dir=output_dir,
+            voice=voice,
+            audio_format=audio_format,
+            timeout=timeout,
+            force=force,
+            chunked=chunked,
+            chunk_chars=chunk_chars,
+            concurrency=concurrency,
+            retries=retries,
+            stall_timeout=stall_timeout,
+            speech_options=speech_options,
+        )
+    except AudioError as exc:
+        failures.append(AudioFailure(label=label, target_dir=raw_path, error=str(exc)))
+        return "failed"
+    return status
+
+
+def _print_audio_failures(failures: list[AudioFailure]) -> None:
+    print(f"audio failures: {len(failures)}", file=sys.stderr)
+    for failure in failures:
+        print(f"  - {failure.label}", file=sys.stderr)
+        print(f"    path: {failure.target_dir}", file=sys.stderr)
+        print(f"    reason: {failure.error}", file=sys.stderr)
 
 
 def _style_success(value: str) -> str:
@@ -930,6 +1272,106 @@ def _progress_step(label: str) -> Iterator[None]:
     sys.stderr.flush()
 
 
+@contextmanager
+def _audio_progress_step(label: str) -> Iterator[Callable[[str, Path | None, int | None], None]]:
+    if not sys.stderr.isatty():
+        print(f"→ {label}...", file=sys.stderr, flush=True)
+
+        def progress_plain(event: str, path: Path | None, size: int | None) -> None:
+            del path
+            if event == "waiting_lock":
+                print("  queued: waiting for audio engine lock", file=sys.stderr, flush=True)
+            elif event == "aiff_growth" and size is not None:
+                print(f"  aiff: {_format_bytes(size)}", file=sys.stderr, flush=True)
+            elif event == "chunking" and size is not None:
+                print(f"  chunks: {size}", file=sys.stderr, flush=True)
+            elif event == "retrying" and size is not None:
+                print(f"  retry: attempt {size + 1}", file=sys.stderr, flush=True)
+            elif event == "converting":
+                print("  converting: final audio format", file=sys.stderr, flush=True)
+
+        try:
+            yield progress_plain
+        except BaseException:
+            print(f"✗ {label}", file=sys.stderr, flush=True)
+            raise
+        print(f"✓ {label}", file=sys.stderr, flush=True)
+        return
+
+    stop = threading.Event()
+    state: dict[str, object] = {"event": "starting", "size": 0}
+
+    def progress_tty(event: str, path: Path | None, size: int | None) -> None:
+        del path
+        state["event"] = event
+        if size is not None:
+            state["size"] = size
+
+    def spin() -> None:
+        index = 0
+        while not stop.is_set():
+            event = str(state["event"])
+            raw_size = state["size"]
+            size = raw_size if isinstance(raw_size, int) else 0
+            line = f"{_indeterminate_bar(index)} {label}"
+            detail = _audio_progress_detail(event, size, index=index)
+            sys.stderr.write(f"\r\033[K{line}\n\033[K{detail}\033[1A")
+            sys.stderr.flush()
+            index += 1
+            time.sleep(0.1)
+
+    thread = threading.Thread(target=spin, daemon=True)
+    thread.start()
+    try:
+        yield progress_tty
+    except BaseException:
+        stop.set()
+        thread.join()
+        sys.stderr.write(f"\r\033[K✗ {label}\n\033[K")
+        sys.stderr.flush()
+        raise
+    stop.set()
+    thread.join()
+    sys.stderr.write(f"\r\033[K✓ {label}\n\033[K")
+    sys.stderr.flush()
+
+
+def _audio_progress_detail(event: str, size: int, *, index: int) -> str:
+    if event == "waiting_lock":
+        return f"{_style_info('queued')} waiting for audio engine lock"
+    if event == "converting":
+        return f"{_style_info('convert')} final audio format"
+    if event == "chunking":
+        return f"{_style_info('chunks')} preparing {size} audio chunks"
+    if event == "retrying":
+        return f"{_style_info('retry')} audio chunk attempt {size + 1}"
+    if event in {"synthesizing", "aiff_growth"}:
+        return f"{_byte_growth_bar(size, frame=index)} {_format_bytes(size)} AIFF written"
+    return f"{_style_muted('starting')} preparing audio engine"
+
+
+def _byte_growth_bar(size: int, *, frame: int, width: int = 18) -> str:
+    if size <= 0:
+        return "[" + (" " * width) + "]"
+    marker_count = min(width, max(1, size.bit_length() - 20))
+    offset = frame % width
+    cells = [" "] * width
+    for index in range(marker_count):
+        cells[(offset + index) % width] = "█"
+    return "[" + "".join(cells) + "]"
+
+
+def _format_bytes(size: int) -> str:
+    value = float(max(0, size))
+    for suffix in ("B", "KB", "MB", "GB"):
+        if value < 1024 or suffix == "GB":
+            if suffix == "B":
+                return f"{int(value)} {suffix}"
+            return f"{value:.1f} {suffix}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
 def _format_duration(seconds: float) -> str:
     total_seconds = max(0, int(seconds))
     minutes, remaining_seconds = divmod(total_seconds, 60)
@@ -968,6 +1410,13 @@ def _download_issue_article(
     output_dir: Path,
     create_audio: bool,
     audio_format: str,
+    audio_timeout: float,
+    audio_chunked: bool = True,
+    audio_chunk_chars: int = 2500,
+    audio_concurrency: int = 3,
+    audio_retries: int = 2,
+    audio_stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...] | None = None,
     force: bool = False,
 ) -> int:
@@ -995,6 +1444,13 @@ def _download_issue_article(
         output_dir,
         create_audio=create_audio,
         audio_format=audio_format,
+        audio_timeout=audio_timeout,
+        audio_chunked=audio_chunked,
+        audio_chunk_chars=audio_chunk_chars,
+        audio_concurrency=audio_concurrency,
+        audio_retries=audio_retries,
+        audio_stall_timeout=audio_stall_timeout,
+        speech_options=speech_options,
         export_formats=export_formats,
         force=force,
         issue_titles={article_link.url: issue.title},
@@ -1018,6 +1474,13 @@ def _download_issue_articles(
     output_dir: Path,
     create_audio: bool,
     audio_format: str,
+    audio_timeout: float,
+    audio_chunked: bool = True,
+    audio_chunk_chars: int = 2500,
+    audio_concurrency: int = 3,
+    audio_retries: int = 2,
+    audio_stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...] | None = None,
     force: bool = False,
 ) -> int:
@@ -1061,6 +1524,13 @@ def _download_issue_articles(
         output_dir,
         create_audio=create_audio,
         audio_format=audio_format,
+        audio_timeout=audio_timeout,
+        audio_chunked=audio_chunked,
+        audio_chunk_chars=audio_chunk_chars,
+        audio_concurrency=audio_concurrency,
+        audio_retries=audio_retries,
+        audio_stall_timeout=audio_stall_timeout,
+        speech_options=speech_options,
         export_formats=export_formats,
         force=force,
         issue_titles=issue_titles,
@@ -1086,6 +1556,13 @@ def _download_new_articles(
     output_dir: Path,
     create_audio: bool,
     audio_format: str,
+    audio_timeout: float,
+    audio_chunked: bool = True,
+    audio_chunk_chars: int = 2500,
+    audio_concurrency: int = 3,
+    audio_retries: int = 2,
+    audio_stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...],
     max_articles: int | None,
 ) -> int:
@@ -1117,15 +1594,23 @@ def _download_new_articles(
         next_index += 1
 
     write_manifest(output_dir, manifest)
+    audio_result = 0
     if create_audio:
-        _speak_paths(
+        audio_result = _speak_paths(
             downloaded_dirs,
             output_dir=config.output_dir,
             voice=config.siri_voice,
             audio_format=audio_format,
+            timeout=audio_timeout,
+            chunked=audio_chunked,
+            chunk_chars=audio_chunk_chars,
+            concurrency=audio_concurrency,
+            retries=audio_retries,
+            stall_timeout=audio_stall_timeout,
+            speech_options=speech_options,
         )
     print(f"new_articles: {len(downloaded_dirs)}")
-    return 0
+    return audio_result
 
 
 def _handle_sync(
@@ -1133,6 +1618,13 @@ def _handle_sync(
     *,
     create_audio: bool,
     audio_format: str,
+    audio_timeout: float,
+    audio_chunked: bool = True,
+    audio_chunk_chars: int = 2500,
+    audio_concurrency: int = 3,
+    audio_retries: int = 2,
+    audio_stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...],
     max_articles: int | None,
 ) -> int:
@@ -1181,15 +1673,23 @@ def _handle_sync(
             break
 
     write_manifest(output_dir, manifest)
+    audio_result = 0
     if create_audio:
-        _speak_paths(
+        audio_result = _speak_paths(
             downloaded_dirs,
             output_dir=output_dir,
             voice=config.siri_voice,
             audio_format=audio_format,
+            timeout=audio_timeout,
+            chunked=audio_chunked,
+            chunk_chars=audio_chunk_chars,
+            concurrency=audio_concurrency,
+            retries=audio_retries,
+            stall_timeout=audio_stall_timeout,
+            speech_options=speech_options,
         )
     print(f"new_articles: {len(downloaded_dirs)}")
-    return 0
+    return audio_result
 
 
 def _issue_folder_name(title: str, published_month: str | None) -> str:
@@ -1225,6 +1725,13 @@ def _handle_sync_feed(
     *,
     create_audio: bool,
     audio_format: str,
+    audio_timeout: float,
+    audio_chunked: bool = True,
+    audio_chunk_chars: int = 2500,
+    audio_concurrency: int = 3,
+    audio_retries: int = 2,
+    audio_stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...],
     max_articles: int | None,
     pages: int,
@@ -1236,6 +1743,13 @@ def _handle_sync_feed(
         output_dir=config.feed_output_dir,
         create_audio=create_audio,
         audio_format=audio_format,
+        audio_timeout=audio_timeout,
+        audio_chunked=audio_chunked,
+        audio_chunk_chars=audio_chunk_chars,
+        audio_concurrency=audio_concurrency,
+        audio_retries=audio_retries,
+        audio_stall_timeout=audio_stall_timeout,
+        speech_options=speech_options,
         export_formats=export_formats,
         max_articles=max_articles,
     )
@@ -1262,18 +1776,53 @@ def _speak_paths(
     output_dir: Path,
     voice: str | None,
     audio_format: str,
+    timeout: float,
+    chunked: bool = True,
+    chunk_chars: int = 2500,
+    concurrency: int = 3,
+    retries: int = 2,
+    stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     force: bool = False,
 ) -> int:
     normalized_format = normalize_audio_format(audio_format)
+    failures: list[AudioFailure] = []
     for raw_path in paths:
-        status, output_path = _ensure_audio(
-            raw_path,
-            output_dir=output_dir,
-            voice=voice,
-            audio_format=normalized_format,
-            force=force,
-        )
+        try:
+            status, output_path = _ensure_audio(
+                raw_path,
+                output_dir=output_dir,
+                voice=voice,
+                audio_format=normalized_format,
+                timeout=timeout,
+                force=force,
+                chunked=chunked,
+                chunk_chars=chunk_chars,
+                concurrency=concurrency,
+                retries=retries,
+                stall_timeout=stall_timeout,
+                speech_options=speech_options,
+            )
+        except AudioError as exc:
+            failures.append(AudioFailure(label=raw_path.name, target_dir=raw_path, error=str(exc)))
+            continue
         print(f"audio ({status}): {output_path}")
+    if failures:
+        _print_audio_failures(failures)
+        return 1
+    return 0
+
+
+def _handle_speech_normalize(
+    text_paths: list[Path],
+    *,
+    speech_options: SpeechNormalizeOptions,
+) -> int:
+    for text_path in text_paths:
+        result = normalize_speech_text(text_path, _speech_settings(speech_options))
+        print(f"speech: {result.path}")
+        if result.diff_text:
+            print(result.diff_text, end="")
     return 0
 
 
@@ -1283,6 +1832,13 @@ def _ensure_audio(
     output_dir: Path,
     voice: str | None,
     audio_format: str,
+    timeout: float,
+    chunked: bool = True,
+    chunk_chars: int = 2500,
+    concurrency: int = 3,
+    retries: int = 2,
+    stall_timeout: float = 45.0,
+    speech_options: SpeechNormalizeOptions | None = None,
     force: bool = False,
 ) -> tuple[str, Path]:
     normalized_format = normalize_audio_format(audio_format)
@@ -1296,8 +1852,26 @@ def _ensure_audio(
     )
     if output_path.exists() and not force:
         return "reused", output_path
-    with _progress_step(f"Generating audio {output_path.name}"):
-        synthesize_audio(text_path, output_path, voice=voice, audio_format=normalized_format)
+    speech_source_path = text_path
+    if speech_options is not None and speech_options.enabled:
+        speech_source_path = ensure_speech_text(
+            text_path,
+            options=speech_options,
+        )
+    with _audio_progress_step(f"Generating audio {output_path.name}") as progress:
+        synthesize_audio(
+            speech_source_path,
+            output_path,
+            voice=voice,
+            audio_format=normalized_format,
+            timeout=timeout,
+            progress=progress,
+            chunked=chunked,
+            chunk_chars=chunk_chars,
+            concurrency=concurrency,
+            retries=retries,
+            stall_timeout=stall_timeout,
+        )
     return "generated", output_path
 
 
@@ -1371,7 +1945,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.command == "download":
             output_dir = args.output_dir or config.output_dir
-            create_audio, audio_format = _audio_options(args, config)
+            audio_options = _audio_options(args, config)
+            speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
             if args.all:
                 if not args.issue:
@@ -1384,8 +1959,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     issue_selector=str(args.issue),
                     config=config,
                     output_dir=output_dir,
-                    create_audio=create_audio,
-                    audio_format=audio_format,
+                    create_audio=audio_options.create,
+                    audio_format=audio_options.audio_format,
+                    audio_timeout=audio_options.timeout,
+                    audio_chunked=audio_options.chunked,
+                    audio_chunk_chars=audio_options.chunk_chars,
+                    audio_concurrency=audio_options.concurrency,
+                    audio_retries=audio_options.retries,
+                    audio_stall_timeout=audio_options.stall_timeout,
+                    speech_options=speech_options,
                     export_formats=export_formats,
                     force=bool(args.force),
                 )
@@ -1399,8 +1981,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     article_selector=str(args.article),
                     config=config,
                     output_dir=output_dir,
-                    create_audio=create_audio,
-                    audio_format=audio_format,
+                    create_audio=audio_options.create,
+                    audio_format=audio_options.audio_format,
+                    audio_timeout=audio_options.timeout,
+                    audio_chunked=audio_options.chunked,
+                    audio_chunk_chars=audio_options.chunk_chars,
+                    audio_concurrency=audio_options.concurrency,
+                    audio_retries=audio_options.retries,
+                    audio_stall_timeout=audio_options.stall_timeout,
+                    speech_options=speech_options,
                     export_formats=export_formats,
                     force=bool(args.force),
                 )
@@ -1410,47 +1999,93 @@ def main(argv: Sequence[str] | None = None) -> int:
                 list(args.article_urls),
                 config,
                 output_dir,
-                create_audio=create_audio,
-                audio_format=audio_format,
+                create_audio=audio_options.create,
+                audio_format=audio_options.audio_format,
+                audio_timeout=audio_options.timeout,
+                audio_chunked=audio_options.chunked,
+                audio_chunk_chars=audio_options.chunk_chars,
+                audio_concurrency=audio_options.concurrency,
+                audio_retries=audio_options.retries,
+                audio_stall_timeout=audio_options.stall_timeout,
+                speech_options=speech_options,
                 export_formats=export_formats,
                 force=bool(args.force),
             )
         if args.command in {"sync-magazine", "sync"}:
-            create_audio, audio_format = _audio_options(args, config)
+            audio_options = _audio_options(args, config)
+            speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
             return _handle_sync(
                 config,
-                create_audio=create_audio,
-                audio_format=audio_format,
+                create_audio=audio_options.create,
+                audio_format=audio_options.audio_format,
+                audio_timeout=audio_options.timeout,
+                audio_chunked=audio_options.chunked,
+                audio_chunk_chars=audio_options.chunk_chars,
+                audio_concurrency=audio_options.concurrency,
+                audio_retries=audio_options.retries,
+                audio_stall_timeout=audio_options.stall_timeout,
+                speech_options=speech_options,
                 export_formats=export_formats,
                 max_articles=args.max_articles,
             )
         if args.command in {"sync-feed", "sync-weekly"}:
-            create_audio, audio_format = _audio_options(args, config)
+            audio_options = _audio_options(args, config)
+            speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
             return _handle_sync_feed(
                 config,
-                create_audio=create_audio,
-                audio_format=audio_format,
+                create_audio=audio_options.create,
+                audio_format=audio_options.audio_format,
+                audio_timeout=audio_options.timeout,
+                audio_chunked=audio_options.chunked,
+                audio_chunk_chars=audio_options.chunk_chars,
+                audio_concurrency=audio_options.concurrency,
+                audio_retries=audio_options.retries,
+                audio_stall_timeout=audio_options.stall_timeout,
+                speech_options=speech_options,
                 export_formats=export_formats,
                 max_articles=args.max_articles,
                 pages=int(args.pages),
             )
         if args.command == "speak":
             voice = args.voice if args.voice is not None else config.siri_voice
-            audio_format = normalize_audio_format(args.audio_format or config.audio_format)
+            audio_options = _audio_options(args, replace(config, audio_auto=True))
+            speech_options = _speech_normalize_options(args, config)
             return _speak_paths(
                 _resolve_text_paths(config.output_dir, list(args.paths)),
                 output_dir=config.output_dir,
                 voice=voice,
-                audio_format=audio_format,
+                audio_format=audio_options.audio_format,
+                timeout=audio_options.timeout,
+                chunked=audio_options.chunked,
+                chunk_chars=audio_options.chunk_chars,
+                concurrency=audio_options.concurrency,
+                retries=audio_options.retries,
+                stall_timeout=audio_options.stall_timeout,
+                speech_options=speech_options,
+            )
+        if args.command == "speech-normalize":
+            speech_options = _speech_normalize_options(args, config, diff=bool(args.diff))
+            if not speech_options.enabled:
+                speech_options = replace(speech_options, enabled=True)
+            return _handle_speech_normalize(
+                _resolve_text_paths(config.output_dir, list(args.paths)),
+                speech_options=speech_options,
             )
         if args.command == "voices":
             return _handle_voices(all_voices=bool(args.all))
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130
-    except (AudioError, BrowserAuthError, FetchError, OSError, ValueError) as exc:
+    except (
+        AudioError,
+        BrowserAuthError,
+        FetchError,
+        OSError,
+        SpeechNormalizeError,
+        ValueError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

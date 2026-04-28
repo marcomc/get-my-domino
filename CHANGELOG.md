@@ -72,6 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `say` process.
 - Kept multi-article downloads and syncs running when one article audio
   conversion fails, then reported all audio failures at the end.
+- Added optional AI-assisted speech text normalization, disabled by default,
+  with a generic agent configuration and an implemented `codex exec` backend
+  that writes `<article-basename>.speech.txt` before audio synthesis.
 - Removed source URLs from `article.txt` and `article.rtf` body text so speech
   synthesis does not read article links aloud.
 - Added issue title and detected `di ...` author lines to generated article

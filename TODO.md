@@ -53,9 +53,10 @@
     explicitly added and tested for markup support.
   - Require the prompt to repair known Domino/TTS artifacts:
     `(ri)tornava` -> `ritornava`; `transita(va)` -> `transitava` when context
-    requires the past tense; isolated one-word lines such as `Jahannam`,
-    `Artesh`, `pasdaran`, or `intelligence` must be rejoined with surrounding
-    prose when they are not real headings.
+    requires the past tense; `Donald(o)` -> `Donaldo` when it is a deliberate
+    wordplay rather than a true optional parenthetical; isolated one-word lines
+    such as `Jahannam`, `Artesh`, `pasdaran`, or `intelligence` must be
+    rejoined with surrounding prose when they are not real headings.
   - Require the prompt to convert parenthetical dash inserts that would be read
     awkwardly, for example `– si fa per dire –` -> `(si fa per dire),` when the
     surrounding syntax needs a comma after the insert.
@@ -115,7 +116,9 @@
   Fix typographic wordplay that harms pronunciation when the intended spoken
   word is clear: "(ri)tornava" becomes "ritornava"; "transita(va)" becomes the
   contextually correct spoken form, normally "transitava" in past-tense prose.
-  Keep true parenthetical content when it changes meaning.
+  When the parenthetical letters are a deliberate spoken pun, spell the pun as
+  it should be heard: "Donald(o)" becomes "Donaldo". Keep true parenthetical
+  content when it changes meaning.
 
   Repair line breaks created by page extraction. If a single word or short
   foreign expression is isolated between blank lines but syntactically belongs

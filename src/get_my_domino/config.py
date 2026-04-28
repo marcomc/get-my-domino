@@ -61,6 +61,19 @@ class AppConfig:
     siri_voice: str | None = None
     audio_auto: bool = False
     audio_format: str = "m4a"
+    audio_timeout: float = 900.0
+    audio_chunked: bool = True
+    audio_chunk_chars: int = 2500
+    audio_chunk_concurrency: int = 3
+    audio_chunk_retries: int = 2
+    audio_stall_timeout: float = 45.0
+    speech_normalize_auto: bool = False
+    speech_normalize_agent: str = "codex"
+    speech_normalize_command: str = "codex"
+    speech_normalize_model: str = ""
+    speech_normalize_timeout: float = 900.0
+    speech_normalize_force: bool = False
+    speech_normalize_fallback: bool = False
     export_formats: tuple[str, ...] = ("html", "txt")
 
     @property
@@ -159,6 +172,30 @@ def load_config(path: Path) -> AppConfig:
         siri_voice=str(data["siri_voice"]) if data.get("siri_voice") else None,
         audio_auto=bool(data.get("audio_auto", False)),
         audio_format=normalize_audio_format(str(data.get("audio_format", "m4a"))),
+        audio_timeout=normalize_audio_timeout(data.get("audio_timeout", 900.0)),
+        audio_chunked=bool(data.get("audio_chunked", True)),
+        audio_chunk_chars=normalize_positive_int(
+            data.get("audio_chunk_chars", 2500),
+            key="audio_chunk_chars",
+        ),
+        audio_chunk_concurrency=normalize_positive_int(
+            data.get("audio_chunk_concurrency", 3),
+            key="audio_chunk_concurrency",
+        ),
+        audio_chunk_retries=normalize_non_negative_int(
+            data.get("audio_chunk_retries", 2),
+            key="audio_chunk_retries",
+        ),
+        audio_stall_timeout=normalize_audio_timeout(data.get("audio_stall_timeout", 45.0)),
+        speech_normalize_auto=bool(data.get("speech_normalize_auto", False)),
+        speech_normalize_agent=str(data.get("speech_normalize_agent", "codex")),
+        speech_normalize_command=str(data.get("speech_normalize_command", "codex")),
+        speech_normalize_model=str(data.get("speech_normalize_model", "")),
+        speech_normalize_timeout=normalize_audio_timeout(
+            data.get("speech_normalize_timeout", 900.0)
+        ),
+        speech_normalize_force=bool(data.get("speech_normalize_force", False)),
+        speech_normalize_fallback=bool(data.get("speech_normalize_fallback", False)),
         export_formats=normalize_export_formats(data.get("export_formats", ("html", "txt"))),
     )
 
@@ -191,3 +228,30 @@ def normalize_export_formats(value: object) -> tuple[str, ...]:
     if not formats:
         raise ValueError("export_formats must contain at least one format.")
     return tuple(formats)
+
+
+def normalize_audio_timeout(value: object) -> float:
+    if not isinstance(value, str | int | float):
+        raise ValueError("audio_timeout must be a number of seconds.")
+    timeout = float(value)
+    if timeout <= 0:
+        raise ValueError("audio_timeout must be greater than 0 seconds.")
+    return timeout
+
+
+def normalize_positive_int(value: object, *, key: str) -> int:
+    if not isinstance(value, str | int):
+        raise ValueError(f"{key} must be a positive integer.")
+    normalized = int(value)
+    if normalized <= 0:
+        raise ValueError(f"{key} must be greater than 0.")
+    return normalized
+
+
+def normalize_non_negative_int(value: object, *, key: str) -> int:
+    if not isinstance(value, str | int):
+        raise ValueError(f"{key} must be a non-negative integer.")
+    normalized = int(value)
+    if normalized < 0:
+        raise ValueError(f"{key} must be greater than or equal to 0.")
+    return normalized

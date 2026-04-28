@@ -18,6 +18,19 @@ user_agent = "get-my-domino/0.1.0"
 siri_voice = ""
 audio_auto = false
 audio_format = "m4a"
+audio_timeout = 900
+audio_chunked = true
+audio_chunk_chars = 2500
+audio_chunk_concurrency = 3
+audio_chunk_retries = 2
+audio_stall_timeout = 45
+speech_normalize_auto = false
+speech_normalize_agent = "codex"
+speech_normalize_command = "codex"
+speech_normalize_model = ""
+speech_normalize_timeout = 900
+speech_normalize_force = false
+speech_normalize_fallback = false
 export_formats = ["html", "txt"]
 
 # Authentication is read from this config file, not from browser extensions.

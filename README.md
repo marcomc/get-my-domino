@@ -127,6 +127,19 @@ feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-dom
 feed_folder_name = "la-settimana-di-domino"
 audio_auto = false
 audio_format = "m4a"
+audio_timeout = 900
+audio_chunked = true
+audio_chunk_chars = 2500
+audio_chunk_concurrency = 3
+audio_chunk_retries = 2
+audio_stall_timeout = 45
+speech_normalize_auto = false
+speech_normalize_agent = "codex"
+speech_normalize_command = "codex"
+speech_normalize_model = ""
+speech_normalize_timeout = 900
+speech_normalize_force = false
+speech_normalize_fallback = false
 export_formats = ["html", "txt"]
 siri_voice = ""
 auth_login_url = "https://www.rivistadomino.it/mio-account/"
@@ -275,9 +288,30 @@ When terminal colors are available, status labels use restrained color for
 quick scanning. Use `--verbose` to also print the article export directory
 after each row. The article summary includes one total elapsed time.
 macOS `say` does not expose true synthesis percentage, so audio generation
-does not show a percentage or ETA. Press `Ctrl-C` to stop a run cleanly; the
-CLI stops active speech synthesis, removes the temporary `.aiff` file, and
-prints `interrupted` without a Python traceback.
+does not show a percentage or ETA. By default, long article text is split into
+small paragraph-aware chunks. The CLI synthesizes up to
+`audio_chunk_concurrency = 3` chunk AIFF files at a time, retries failed chunks
+with `audio_chunk_retries`, joins the AIFF chunks into one temporary AIFF, and
+then performs one final `afconvert` or `ffmpeg` conversion. This avoids long
+single `say` runs that can silently truncate Siri/neural output.
+
+`audio_timeout` stops a stuck `say`, `afconvert`, or `ffmpeg` command after
+the configured number of seconds. `audio_stall_timeout` retries a chunk when
+the temporary AIFF file stops growing. These values can be overridden per run:
+
+```bash
+get-my-domino download --issue 2026-04 --article 1 --audio-timeout 1200
+get-my-domino download --issue 2026-04 --article 1 --audio-jobs 4
+get-my-domino download --issue 2026-04 --article 1 --no-audio-chunks
+```
+
+Press `Ctrl-C` to stop a run cleanly; the CLI stops active speech synthesis,
+removes the temporary `.aiff` file, and prints `interrupted` without a Python
+traceback. The chunked synthesis step uses a user-level lock across concurrent
+`get-my-domino` processes so two separate CLI runs do not overlap large Siri
+speech jobs. If one article audio conversion fails during a multi-article
+download or sync, remaining articles continue; the command prints an audio
+failure summary at the end and exits non-zero.
 
 Set `export_formats` in the config, or repeat `--format` on `download`,
 `sync-magazine`, or `sync-feed`, to choose article export formats. The default
@@ -340,7 +374,27 @@ Create audio from downloaded text files:
 get-my-domino speak
 get-my-domino speak --audio-format mp3
 get-my-domino sync-magazine --audio --audio-format m4a
+get-my-domino download --issue 2026-04 --article 1 --audio-timeout 1200
+get-my-domino download --issue 2026-04 --all --audio-jobs 3
 ```
+
+Optionally create speech-ready text before audio synthesis:
+
+```bash
+get-my-domino speech-normalize /path/to/article-dir --diff
+get-my-domino download --issue 2026-04 --article 1 --audio --speech-normalize
+get-my-domino sync-magazine --audio --speech-normalize
+```
+
+Speech normalization is disabled by default because it invokes an external AI
+agent and may send article text to the service configured for that agent. The
+current implemented backend is `speech_normalize_agent = "codex"`, which calls
+the local `codex exec` CLI through `speech_normalize_command`. The config is
+structured for future backends (`codex-cloud`, `github-cli`, `github-copilot`,
+and `jelly`), but those agents currently fail with a clear “not implemented”
+message. When enabled, the CLI writes `<article-basename>.speech.txt` beside
+the original `.txt` export and sends that speech-ready file to macOS `say`.
+The original `.txt` remains unchanged.
 
 List the exact voice names that macOS `say` accepts:
 

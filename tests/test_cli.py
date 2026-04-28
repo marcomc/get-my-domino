@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import requests
 from pytest import CaptureFixture, MonkeyPatch
 from requests import Response
 from requests.cookies import RequestsCookieJar
 
-from get_my_domino import __version__, cli
+from get_my_domino import __version__, cli, speech_normalize
 from get_my_domino import audio as audio_module
 from get_my_domino.config import AppConfig, load_config
 from get_my_domino.extract import extract_article, extract_links
@@ -18,6 +21,11 @@ from get_my_domino.models import Article, Link
 from get_my_domino.session_store import load_cookies, save_cookies
 from get_my_domino.storage import article_text_document, write_article
 from get_my_domino.web import WebClient
+
+
+@pytest.fixture(autouse=True)
+def isolate_audio_lock(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GET_MY_DOMINO_AUDIO_LOCK_PATH", str(tmp_path / "audio.lock"))
 
 
 class FakeResponse(Response):
@@ -222,6 +230,19 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
             [
                 "audio_auto = true",
                 'audio_format = "mp4a"',
+                "audio_timeout = 123",
+                "audio_chunked = false",
+                "audio_chunk_chars = 3456",
+                "audio_chunk_concurrency = 4",
+                "audio_chunk_retries = 3",
+                "audio_stall_timeout = 67",
+                "speech_normalize_auto = true",
+                'speech_normalize_agent = "codex"',
+                'speech_normalize_command = "codex"',
+                'speech_normalize_model = "gpt-5.2"',
+                "speech_normalize_timeout = 456",
+                "speech_normalize_force = true",
+                "speech_normalize_fallback = true",
                 'siri_voice = "Siri Voice 2"',
                 "",
             ]
@@ -233,6 +254,19 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
 
     assert config.audio_auto is True
     assert config.audio_format == "m4a"
+    assert config.audio_timeout == 123.0
+    assert config.audio_chunked is False
+    assert config.audio_chunk_chars == 3456
+    assert config.audio_chunk_concurrency == 4
+    assert config.audio_chunk_retries == 3
+    assert config.audio_stall_timeout == 67.0
+    assert config.speech_normalize_auto is True
+    assert config.speech_normalize_agent == "codex"
+    assert config.speech_normalize_command == "codex"
+    assert config.speech_normalize_model == "gpt-5.2"
+    assert config.speech_normalize_timeout == 456.0
+    assert config.speech_normalize_force is True
+    assert config.speech_normalize_fallback is True
     assert config.siri_voice == "Siri Voice 2"
 
 
@@ -687,6 +721,7 @@ def test_download_resolves_issue_article_selector(
         output_dir=config.output_dir,
         create_audio=False,
         audio_format="m4a",
+        audio_timeout=900.0,
     )
 
     captured = capsys.readouterr()
@@ -755,6 +790,7 @@ def test_download_issue_all_downloads_every_article(
         output_dir=config.output_dir,
         create_audio=False,
         audio_format="m4a",
+        audio_timeout=900.0,
         export_formats=("html", "txt"),
     )
 
@@ -835,8 +871,11 @@ def test_explicit_download_reuses_existing_manifest_dir_and_backfills_audio(
         *,
         voice: str | None,
         audio_format: str,
+        timeout: float | None = None,
+        progress: object | None = None,
+        **kwargs: object,
     ) -> Path:
-        del voice, audio_format
+        del voice, audio_format, timeout, progress, kwargs
         audio_calls.append((source, output))
         output.write_text("audio", encoding="utf-8")
         return output
@@ -854,6 +893,7 @@ def test_explicit_download_reuses_existing_manifest_dir_and_backfills_audio(
         config.output_dir,
         create_audio=True,
         audio_format="m4a",
+        audio_timeout=900.0,
     )
 
     assert result == 0
@@ -895,8 +935,11 @@ def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
         *,
         voice: str | None,
         audio_format: str,
+        timeout: float | None = None,
+        progress: object | None = None,
+        **kwargs: object,
     ) -> Path:
-        del voice, audio_format
+        del voice, audio_format, timeout, progress, kwargs
         audio_calls.append((source, output))
         output.write_text("audio", encoding="utf-8")
         return output
@@ -914,6 +957,7 @@ def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
         config.output_dir,
         create_audio=True,
         audio_format="m4a",
+        audio_timeout=900.0,
     )
 
     assert result == 0
@@ -965,8 +1009,11 @@ def test_explicit_download_reuses_existing_audio_without_force(
         *,
         voice: str | None,
         audio_format: str,
+        timeout: float | None = None,
+        progress: object | None = None,
+        **kwargs: object,
     ) -> Path:
-        del voice, audio_format
+        del voice, audio_format, timeout, progress, kwargs
         audio_calls.append((source, output))
         output.write_text("new audio", encoding="utf-8")
         return output
@@ -984,6 +1031,7 @@ def test_explicit_download_reuses_existing_audio_without_force(
         config.output_dir,
         create_audio=True,
         audio_format="m4a",
+        audio_timeout=900.0,
     )
 
     captured = capsys.readouterr()
@@ -1027,8 +1075,11 @@ def test_explicit_download_force_regenerates_existing_audio(
         *,
         voice: str | None,
         audio_format: str,
+        timeout: float | None = None,
+        progress: object | None = None,
+        **kwargs: object,
     ) -> Path:
-        del voice, audio_format
+        del voice, audio_format, timeout, progress, kwargs
         audio_calls.append((source, output))
         output.write_text("new audio", encoding="utf-8")
         return output
@@ -1044,6 +1095,7 @@ def test_explicit_download_force_regenerates_existing_audio(
         config.output_dir,
         create_audio=True,
         audio_format="m4a",
+        audio_timeout=900.0,
         force=True,
     )
 
@@ -1085,6 +1137,7 @@ def test_explicit_download_force_rewrites_existing_export(
         config.output_dir,
         create_audio=False,
         audio_format="m4a",
+        audio_timeout=900.0,
         force=True,
     )
 
@@ -1338,18 +1391,124 @@ def test_write_article_can_create_rtf_when_requested(tmp_path: Path) -> None:
 
 def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
     parser = cli.build_parser()
-    config = AppConfig(audio_auto=True, audio_format="m4a")
+    config = AppConfig(
+        audio_auto=True,
+        audio_format="m4a",
+        audio_timeout=123.0,
+        audio_chunked=True,
+        audio_chunk_chars=2500,
+        audio_chunk_concurrency=3,
+        audio_chunk_retries=2,
+        audio_stall_timeout=45.0,
+    )
 
     sync_args = parser.parse_args(["sync-magazine"])
-    assert cli._audio_options(sync_args, config) == (True, "m4a")
+    sync_options = cli._audio_options(sync_args, config)
+    assert sync_options.create is True
+    assert sync_options.audio_format == "m4a"
+    assert sync_options.timeout == 123.0
+    assert sync_options.chunked is True
+    assert sync_options.chunk_chars == 2500
+    assert sync_options.concurrency == 3
+    assert sync_options.retries == 2
+    assert sync_options.stall_timeout == 45.0
 
     feed_args = parser.parse_args(["sync-feed", "--no-audio"])
-    assert cli._audio_options(feed_args, config) == (False, "m4a")
+    assert cli._audio_options(feed_args, config).create is False
 
     download_args = parser.parse_args(
-        ["download", "https://example.test/a", "--audio", "--audio-format", "mp3"]
+        [
+            "download",
+            "https://example.test/a",
+            "--audio",
+            "--audio-format",
+            "mp3",
+            "--audio-timeout",
+            "45",
+            "--audio-jobs",
+            "4",
+            "--audio-chunk-chars",
+            "3000",
+            "--audio-retries",
+            "1",
+            "--audio-stall-timeout",
+            "30",
+        ]
     )
-    assert cli._audio_options(download_args, AppConfig()) == (True, "mp3")
+    download_options = cli._audio_options(download_args, AppConfig())
+    assert download_options.create is True
+    assert download_options.audio_format == "mp3"
+    assert download_options.timeout == 45.0
+    assert download_options.chunked is True
+    assert download_options.chunk_chars == 3000
+    assert download_options.concurrency == 4
+    assert download_options.retries == 1
+    assert download_options.stall_timeout == 30.0
+
+
+def test_audio_timeout_must_be_positive() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["download", "https://example.test/a", "--audio-timeout", "0"])
+
+    try:
+        cli._audio_options(args, AppConfig())
+    except ValueError as exc:
+        assert "audio_timeout must be greater than 0" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_speech_normalize_cli_options_default_to_config_and_allow_overrides() -> None:
+    parser = cli.build_parser()
+    config = AppConfig(
+        speech_normalize_auto=True,
+        speech_normalize_agent="codex",
+        speech_normalize_command="codex",
+        speech_normalize_model="gpt-5.2",
+        speech_normalize_timeout=456.0,
+        speech_normalize_force=False,
+        speech_normalize_fallback=False,
+    )
+
+    sync_args = parser.parse_args(["sync-magazine"])
+    sync_options = cli._speech_normalize_options(sync_args, config)
+    assert sync_options.enabled is True
+    assert sync_options.agent == "codex"
+    assert sync_options.command == "codex"
+    assert sync_options.model == "gpt-5.2"
+    assert sync_options.timeout == 456.0
+    assert sync_options.force is False
+    assert sync_options.fallback is False
+
+    disabled_args = parser.parse_args(
+        ["download", "https://example.test/a", "--no-speech-normalize"]
+    )
+    assert cli._speech_normalize_options(disabled_args, config).enabled is False
+
+    override_args = parser.parse_args(
+        [
+            "download",
+            "https://example.test/a",
+            "--speech-normalize",
+            "--speech-normalize-agent",
+            "codex",
+            "--speech-normalize-command",
+            "/opt/homebrew/bin/codex",
+            "--speech-normalize-model",
+            "gpt-5.3",
+            "--speech-normalize-timeout",
+            "789",
+            "--speech-normalize-force",
+            "--speech-normalize-fallback",
+        ]
+    )
+    override_options = cli._speech_normalize_options(override_args, AppConfig())
+    assert override_options.enabled is True
+    assert override_options.command == "/opt/homebrew/bin/codex"
+    assert override_options.model == "gpt-5.3"
+    assert override_options.timeout == 789.0
+    assert override_options.force is True
+    assert override_options.fallback is True
 
 
 def test_format_duration_uses_minutes_and_hours() -> None:
@@ -1378,7 +1537,7 @@ def test_speak_paths_uses_requested_audio_format(
     )
     text_path.parent.mkdir(parents=True)
     text_path.write_text("Titolo\n\nCorpo.", encoding="utf-8")
-    calls: list[tuple[Path, Path, str | None, str]] = []
+    calls: list[tuple[Path, Path, str | None, str, float | None]] = []
 
     def fake_synthesize_audio(
         source: Path,
@@ -1386,8 +1545,12 @@ def test_speak_paths_uses_requested_audio_format(
         *,
         voice: str | None,
         audio_format: str,
+        timeout: float | None = None,
+        progress: object | None = None,
+        **kwargs: object,
     ) -> Path:
-        calls.append((source, output, voice, audio_format))
+        del progress, kwargs
+        calls.append((source, output, voice, audio_format, timeout))
         output.write_text("fake", encoding="utf-8")
         return output
 
@@ -1398,13 +1561,203 @@ def test_speak_paths_uses_requested_audio_format(
         output_dir=tmp_path / "exports",
         voice="Siri Voice 2",
         audio_format="mp3",
+        timeout=321.0,
     )
 
     captured = capsys.readouterr()
     assert result == 0
     audio_path = tmp_path / "exports" / "audio" / "2026-04-guaio-persiano" / "01-editoriale.mp3"
-    assert calls == [(text_path, audio_path, "Siri Voice 2", "mp3")]
+    assert calls == [(text_path, audio_path, "Siri Voice 2", "mp3", 321.0)]
     assert str(audio_path) in captured.out
+
+
+def test_download_continues_after_audio_failure_and_reports_summary(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    first_url = "https://www.rivistadomino.it/blog/2026/04/21/one"
+    second_url = "https://www.rivistadomino.it/blog/2026/04/21/two"
+    session = FakeSession(
+        {
+            first_url: "<article><h1>One</h1><p>Corpo uno.</p></article>",
+            second_url: "<article><h1>Two</h1><p>Corpo due.</p></article>",
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    calls: list[Path] = []
+
+    def fake_synthesize_audio(
+        source: Path,
+        output: Path,
+        *,
+        voice: str | None,
+        audio_format: str,
+        timeout: float | None = None,
+        progress: object | None = None,
+        chunked: bool = True,
+        chunk_chars: int = 2500,
+        concurrency: int = 3,
+        retries: int = 2,
+        stall_timeout: float | None = 45.0,
+    ) -> Path:
+        del voice, audio_format, timeout, progress, chunked, chunk_chars, concurrency
+        del retries, stall_timeout
+        calls.append(source)
+        if source.name.startswith("001-"):
+            raise audio_module.AudioError("say chunk 2 timed out")
+        output.write_text("audio", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+    monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+
+    result = cli._download_articles(
+        [first_url, second_url],
+        config,
+        config.output_dir,
+        create_audio=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert len(calls) == 2
+    assert "audio failures: 1" in captured.err
+    assert "001-one" in captured.err
+    assert "say chunk 2 timed out" in captured.err
+    assert "Two" in captured.out
+    assert "generated" in captured.out
+
+
+def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    article_dir = tmp_path / "exports" / "001-editoriale"
+    article_dir.mkdir(parents=True)
+    raw_text = article_dir / "001-editoriale.txt"
+    raw_text.write_text("Titolo\n\nCorpo.", encoding="utf-8")
+    speech_text = article_dir / "001-editoriale.speech.txt"
+    calls: list[Path] = []
+
+    def fake_ensure_speech_text(
+        source: Path,
+        *,
+        options: cli.SpeechNormalizeOptions,
+    ) -> Path:
+        assert source == raw_text
+        assert options.enabled is True
+        speech_text.write_text("Titolo\n\nCorpo normalizzato.", encoding="utf-8")
+        return speech_text
+
+    def fake_synthesize_audio(
+        source: Path,
+        output: Path,
+        **kwargs: object,
+    ) -> Path:
+        del kwargs
+        calls.append(source)
+        output.write_text("audio", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(cli, "ensure_speech_text", fake_ensure_speech_text)
+    monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+
+    status, output = cli._ensure_audio(
+        article_dir,
+        output_dir=tmp_path / "exports",
+        voice=None,
+        audio_format="m4a",
+        timeout=900.0,
+        speech_options=cli.SpeechNormalizeOptions(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="",
+            timeout=900.0,
+            force=False,
+            fallback=False,
+            diff=False,
+        ),
+    )
+
+    assert status == "generated"
+    assert calls == [speech_text]
+    assert output == tmp_path / "exports" / "audio" / "001-editoriale.m4a"
+
+
+def test_codex_speech_normalizer_invokes_cli_without_printing_article(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("prossima al\n\nJahannam\n\n. Peggio.", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del input, text, capture_output, timeout, check
+        commands.append(command)
+        output.write_text("prossima al Jahannam.\nPeggio.", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    result = speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="gpt-5.2",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            diff=False,
+        ),
+    )
+
+    assert result == output
+    assert output.read_text(encoding="utf-8") == "prossima al Jahannam.\nPeggio.\n"
+    assert commands
+    assert Path(commands[0][0]).name == "codex"
+    assert commands[0][1] == "exec"
+    assert "-m" in commands[0]
+    assert "gpt-5.2" in commands[0]
+    assert (tmp_path / "001-editoriale.speech.log").exists()
+
+
+def test_speech_normalizer_rejects_unimplemented_agents(tmp_path: Path) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+
+    with pytest.raises(speech_normalize.SpeechNormalizeError) as exc:
+        speech_normalize.ensure_speech_text(
+            source,
+            speech_normalize.SpeechNormalizeSettings(
+                enabled=True,
+                agent="github-copilot",
+                command="gh",
+                model="",
+                timeout=123.0,
+                force=False,
+                fallback=False,
+                diff=False,
+            ),
+        )
+
+    assert "not implemented" in str(exc.value)
 
 
 def test_synthesize_mp3_uses_ffmpeg_after_say(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -1487,9 +1840,194 @@ def test_synthesize_audio_omits_voice_flag_for_system_voice(
     assert "-v" not in commands[0]
 
 
+def test_synthesize_audio_chunked_generates_aiff_chunks_then_converts_once(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("Titolo\n\n" + ("Primo paragrafo. " * 80) + "\n\nFine.", encoding="utf-8")
+    output_path = tmp_path / "article.m4a"
+    commands: list[list[str]] = []
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}"
+
+    def fake_popen(command: list[str]) -> "FakeProcess":
+        commands.append(command)
+        if command[0].endswith("say"):
+            _write_test_aiff(Path(command[command.index("-o") + 1]), frames=8)
+        elif command[0].endswith("afconvert"):
+            assert command[-2].endswith(".aiff")
+            Path(command[-1]).write_text("m4a", encoding="utf-8")
+        return FakeProcess()
+
+    monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
+
+    result = audio_module.synthesize_audio(
+        text_path,
+        output_path,
+        voice="",
+        audio_format="m4a",
+        chunked=True,
+        chunk_chars=300,
+        concurrency=3,
+        retries=1,
+        stall_timeout=45.0,
+    )
+
+    say_commands = [command for command in commands if command[0].endswith("say")]
+    convert_commands = [command for command in commands if command[0].endswith("afconvert")]
+    assert result == output_path
+    assert len(say_commands) > 1
+    assert len(convert_commands) == 1
+    assert output_path.read_text(encoding="utf-8") == "m4a"
+
+
+def _write_test_aiff(path: Path, *, frames: int) -> None:
+    channels = 1
+    sample_size = 16
+    sample_rate_44100 = bytes.fromhex("400eac44000000000000")
+    sound_data = b"\x00\x00" * frames
+    comm = (
+        channels.to_bytes(2, "big")
+        + frames.to_bytes(4, "big")
+        + sample_size.to_bytes(2, "big")
+        + sample_rate_44100
+    )
+    ssnd_payload = (0).to_bytes(4, "big") + (0).to_bytes(4, "big") + sound_data
+    form_size = 4 + 8 + len(comm) + 8 + len(ssnd_payload)
+    path.write_bytes(
+        b"FORM"
+        + form_size.to_bytes(4, "big")
+        + b"AIFF"
+        + b"COMM"
+        + len(comm).to_bytes(4, "big")
+        + comm
+        + b"SSND"
+        + len(ssnd_payload).to_bytes(4, "big")
+        + ssnd_payload
+    )
+
+
+def test_synthesize_audio_locks_say_phase_across_processes(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("Titolo", encoding="utf-8")
+    output_path = tmp_path / "article.m4a"
+    lock_events: list[int] = []
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}"
+
+    def fake_flock(file_descriptor: int, operation: int) -> None:
+        del file_descriptor
+        lock_events.append(operation)
+
+    def fake_popen(command: list[str]) -> "FakeProcess":
+        if command[0].endswith("say"):
+            assert lock_events[-1] == fcntl.LOCK_EX | fcntl.LOCK_NB
+            Path(command[command.index("-o") + 1]).write_text("aiff", encoding="utf-8")
+        elif command[0].endswith("afconvert"):
+            assert lock_events[-1] == fcntl.LOCK_UN
+            Path(command[-1]).write_text("m4a", encoding="utf-8")
+        return FakeProcess()
+
+    monkeypatch.setattr("get_my_domino.audio.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
+    monkeypatch.setattr("get_my_domino.audio.fcntl.flock", fake_flock)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
+
+    result = audio_module.synthesize_audio(
+        text_path,
+        output_path,
+        voice="",
+        audio_format="m4a",
+    )
+
+    assert result == output_path
+    assert lock_events == [fcntl.LOCK_EX | fcntl.LOCK_NB, fcntl.LOCK_UN]
+    assert (tmp_path / "audio.lock").exists()
+
+
+def test_synthesize_audio_reports_lock_queue_and_aiff_growth(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("Titolo", encoding="utf-8")
+    output_path = tmp_path / "article.m4a"
+    lock_events: list[int] = []
+    progress_events: list[tuple[str, int | None]] = []
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}"
+
+    def fake_flock(file_descriptor: int, operation: int) -> None:
+        del file_descriptor
+        lock_events.append(operation)
+        if operation == fcntl.LOCK_EX | fcntl.LOCK_NB:
+            raise BlockingIOError(errno.EAGAIN, "locked")
+
+    def fake_popen(command: list[str]) -> "FakeGrowingProcess | FakeProcess":
+        if command[0].endswith("say"):
+            return FakeGrowingProcess(Path(command[command.index("-o") + 1]))
+        if command[0].endswith("afconvert"):
+            Path(command[-1]).write_text("m4a", encoding="utf-8")
+        return FakeProcess()
+
+    def progress(event: str, path: Path | None, size: int | None) -> None:
+        del path
+        progress_events.append((event, size))
+
+    monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
+    monkeypatch.setattr("get_my_domino.audio.fcntl.flock", fake_flock)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
+
+    result = audio_module.synthesize_audio(
+        text_path,
+        output_path,
+        voice="",
+        audio_format="m4a",
+        progress=progress,
+    )
+
+    assert result == output_path
+    assert lock_events == [
+        fcntl.LOCK_EX | fcntl.LOCK_NB,
+        fcntl.LOCK_EX,
+        fcntl.LOCK_UN,
+    ]
+    assert ("waiting_lock", None) in progress_events
+    assert ("aiff_growth", 4) in progress_events
+    assert ("aiff_growth", 8) in progress_events
+
+
 class FakeProcess:
-    def wait(self, timeout: int | None = None) -> int:
+    def wait(self, timeout: float | None = None) -> int:
         del timeout
+        return 0
+
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        pass
+
+
+class FakeGrowingProcess:
+    def __init__(self, output_path: Path) -> None:
+        self.output_path = output_path
+        self.waits = 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.waits += 1
+        if self.waits == 1:
+            self.output_path.write_text("aiff", encoding="utf-8")
+            raise subprocess.TimeoutExpired(["say"], 0.5)
+        if self.waits == 2:
+            self.output_path.write_text("aiffaiff", encoding="utf-8")
+            raise subprocess.TimeoutExpired(["say"], 0.5)
         return 0
 
     def terminate(self) -> None:
@@ -1536,11 +2074,67 @@ class FakeInterruptingProcess:
         self.killed = False
         self._interrupted = False
 
-    def wait(self, timeout: int | None = None) -> int:
+    def wait(self, timeout: float | None = None) -> int:
         del timeout
         if not self._interrupted:
             self._interrupted = True
             raise KeyboardInterrupt
+        return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_synthesize_audio_times_out_and_removes_temporary_aiff(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("Titolo", encoding="utf-8")
+    output_path = tmp_path / "article.m4a"
+    process = FakeTimingOutProcess(["/usr/bin/say"])
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}"
+
+    def fake_popen(command: list[str]) -> "FakeTimingOutProcess":
+        process.command = command
+        if command[0].endswith("say"):
+            Path(command[command.index("-o") + 1]).write_text("partial aiff", encoding="utf-8")
+        return process
+
+    monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
+
+    try:
+        audio_module.synthesize_audio(
+            text_path,
+            output_path,
+            voice="",
+            audio_format="m4a",
+            timeout=0.01,
+        )
+    except audio_module.AudioError as exc:
+        assert "timed out after 0.01 seconds: say" in str(exc)
+    else:
+        raise AssertionError("expected AudioError")
+
+    assert process.terminated is True
+    assert process.killed is False
+    assert not output_path.with_suffix(".aiff").exists()
+
+
+class FakeTimingOutProcess:
+    def __init__(self, command: list[str]) -> None:
+        self.command = command
+        self.terminated = False
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        if not self.terminated:
+            raise subprocess.TimeoutExpired(self.command, timeout or 0)
         return 0
 
     def terminate(self) -> None:

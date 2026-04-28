@@ -94,6 +94,65 @@
       "enum": ["m4a", "mp4a", "mp3"],
       "default": "m4a"
     },
+    "audio_timeout": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 900
+    },
+    "audio_chunked": {
+      "type": "boolean",
+      "default": true
+    },
+    "audio_chunk_chars": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 2500
+    },
+    "audio_chunk_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3
+    },
+    "audio_chunk_retries": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 2
+    },
+    "audio_stall_timeout": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 45
+    },
+    "speech_normalize_auto": {
+      "type": "boolean",
+      "default": false
+    },
+    "speech_normalize_agent": {
+      "type": "string",
+      "enum": ["codex", "codex-cloud", "github-cli", "github-copilot", "jelly"],
+      "default": "codex"
+    },
+    "speech_normalize_command": {
+      "type": "string",
+      "default": "codex"
+    },
+    "speech_normalize_model": {
+      "type": "string",
+      "default": ""
+    },
+    "speech_normalize_timeout": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 900
+    },
+    "speech_normalize_force": {
+      "type": "boolean",
+      "default": false
+    },
+    "speech_normalize_fallback": {
+      "type": "boolean",
+      "default": false
+    },
     "export_formats": {
       "oneOf": [
         {
