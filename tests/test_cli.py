@@ -1502,6 +1502,7 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
     article_url = "https://www.rivistadomino.it/blog/2026/03/20/guerra-in-iran/"
     write_manifest(output_dir, {article_url: str(existing_dir)})
     spoken: list[Path] = []
+    speak_kwargs: list[dict[str, object]] = []
 
     class FakeWebClient:
         def __init__(self, config: AppConfig) -> None:
@@ -1511,7 +1512,7 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
             raise AssertionError(f"should not redownload existing article: {url}")
 
     def fake_speak_paths(paths: list[Path], **kwargs: object) -> int:
-        del kwargs
+        speak_kwargs.append(kwargs)
         spoken.extend(paths)
         return 0
 
@@ -1533,10 +1534,111 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
 
     assert result == 0
     assert spoken == [existing_dir]
+    assert speak_kwargs[0]["force"] is False
     assert "reused" in captured.out
     assert "pending" in captured.out
     assert str(existing_dir) in captured.out
     assert "new_articles: 0" in captured.out
+
+
+def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    first_dir = output_dir / "2026-03-20-first"
+    second_dir = output_dir / "2026-03-13-second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    first_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
+    second_url = "https://www.rivistadomino.it/blog/2026/03/13/second/"
+    write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    spoken: list[Path] = []
+    speak_kwargs: list[dict[str, object]] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            raise AssertionError(f"should not redownload existing article: {url}")
+
+    def fake_speak_paths(paths: list[Path], **kwargs: object) -> int:
+        spoken.extend(paths)
+        speak_kwargs.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", fake_speak_paths)
+
+    result = cli._download_new_articles(
+        [
+            Link(title="First", url=first_url),
+            Link(title="Second", url=second_url),
+        ],
+        config=AppConfig(output_dir=tmp_path),
+        output_dir=output_dir,
+        create_audio=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=1,
+        force=False,
+    )
+
+    assert result == 0
+    assert spoken == [first_dir]
+    assert speak_kwargs[0]["force"] is False
+
+
+def test_sync_feed_force_redownloads_and_forces_audio_regeneration(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    existing_dir = output_dir / "2026-03-20-first"
+    existing_dir.mkdir(parents=True)
+    article_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
+    write_manifest(output_dir, {article_url: str(existing_dir)})
+    spoken: list[Path] = []
+    speak_kwargs: list[dict[str, object]] = []
+    downloaded: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            downloaded.append(url)
+            return Article(
+                title="First",
+                url=url,
+                html="<article>Updated</article>",
+                text="Updated",
+            )
+
+    def fake_speak_paths(paths: list[Path], **kwargs: object) -> int:
+        spoken.extend(paths)
+        speak_kwargs.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", fake_speak_paths)
+
+    result = cli._download_new_articles(
+        [Link(title="First", url=article_url)],
+        config=AppConfig(output_dir=tmp_path),
+        output_dir=output_dir,
+        create_audio=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+        force=True,
+    )
+
+    assert result == 0
+    assert downloaded == [article_url]
+    assert spoken == [existing_dir]
+    assert speak_kwargs[0]["force"] is True
 
 
 def test_audio_timeout_must_be_positive() -> None:

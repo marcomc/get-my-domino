@@ -1592,15 +1592,17 @@ def _download_new_articles(
     next_index = len(manifest) + 1
     downloaded_dirs: list[Path] = []
     audio_dirs: list[Path] = []
+    selected_count = 0
 
     _print_feed_sync_header(output_dir)
     for article_link in article_links:
-        if max_articles is not None and len(downloaded_dirs) >= max_articles:
+        if max_articles is not None and selected_count >= max_articles:
             break
         existing_dir = _existing_article_dir(manifest, article_link.url)
         if existing_dir is not None and not force:
             if create_audio:
                 audio_dirs.append(existing_dir)
+                selected_count += 1
                 _print_download_result(
                     article_link.title,
                     export_status="reused",
@@ -1637,6 +1639,7 @@ def _download_new_articles(
             )
         manifest[article.url] = str(target_dir)
         downloaded_dirs.append(target_dir)
+        selected_count += 1
         if create_audio:
             audio_dirs.append(target_dir)
         _print_download_result(
@@ -1664,6 +1667,7 @@ def _download_new_articles(
             retries=audio_retries,
             stall_timeout=audio_stall_timeout,
             speech_options=speech_options,
+            force=force,
         )
     print(f"new_articles: {len(downloaded_dirs)}")
     return audio_result
@@ -1700,6 +1704,7 @@ def _handle_sync(
     manifest = read_manifest(output_dir)
     downloaded_dirs: list[Path] = []
     audio_dirs: list[Path] = []
+    selected_count = 0
 
     for issue in issues:
         issue_detail = client.discover_issue(issue.url)
@@ -1709,12 +1714,13 @@ def _handle_sync(
         print(f"issue: {issue_detail.title}")
         group_indexes = _group_indexes(issue_detail.articles)
         for article_link in issue_detail.articles:
-            if max_articles is not None and len(downloaded_dirs) >= max_articles:
+            if max_articles is not None and selected_count >= max_articles:
                 break
             existing_dir = _existing_article_dir(manifest, article_link.url)
             if existing_dir is not None and not force:
                 if create_audio:
                     audio_dirs.append(existing_dir)
+                    selected_count += 1
                 continue
             article = client.download_article(article_link.url)
             article = replace(article, issue_title=issue_detail.title)
@@ -1748,10 +1754,11 @@ def _handle_sync(
                 )
             manifest[article.url] = str(target_dir)
             downloaded_dirs.append(target_dir)
+            selected_count += 1
             if create_audio:
                 audio_dirs.append(target_dir)
             print(f"  downloaded: {article.title}")
-        if max_articles is not None and len(downloaded_dirs) >= max_articles:
+        if max_articles is not None and selected_count >= max_articles:
             break
 
     write_manifest(output_dir, manifest)
@@ -1769,6 +1776,7 @@ def _handle_sync(
             retries=audio_retries,
             stall_timeout=audio_stall_timeout,
             speech_options=speech_options,
+            force=force,
         )
     print(f"new_articles: {len(downloaded_dirs)}")
     return audio_result
