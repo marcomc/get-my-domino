@@ -4,102 +4,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.0] - 2026-04-28
 
 ### Added
 
-- Initial project scaffold generated from `python-cli-template`.
-- Added rivistadomino.it issue discovery, article download, text export, and
-  macOS `.m4a` synthesis commands.
-- Added configuration fields for subscriber-area authentication credentials.
-- Added session-aware WooCommerce login using the configured TOML credentials.
-- Added subscriber issue discovery defaults for the `my_domino` page and
-  `?sfoglia=1` issue links.
-- Added persistent WordPress cookie sessions and browser-assisted login.
-- Added `feed` and `sync-feed` commands for recurring `La settimana di Domino`
-  articles, with legacy `weekly` and `sync-weekly` aliases.
-- Added `sync-magazine` as the primary magazine sync command, with legacy
-  `sync` alias.
-- Added issue-aware export layout with issue month folders, section folders,
-  and dated article folders.
-- Added date-first feed article folders for chronological sorting.
-- Added UTF-8 text plus optional RTF exports for articles containing
-  original-language characters.
-- Added configurable `export_formats` and repeated `--format` flags for
-  `html`, `txt`, and optional `rtf` article exports.
-- Added automatic audio generation through `audio_auto` and configurable
-  `audio_format` values `m4a`, `mp4a`, or `mp3`; MP3 conversion uses
-  `ffmpeg`.
-- Added `catalog` browsing for `YYYY-MM` issue codes, grouped issue contents, full
-  issue expansion, and optional feed listings.
-- Cleaned catalog issue output by removing storefront price text and sorting
-  issues by `YYYY-MM` month.
-- Simplified issue detail output by showing the issue publication date once and
-  removing repeated dates from article rows.
-- Added single-article downloads by issue month and article order.
-- Added `download --issue YYYY-MM --all` to download every article from one
-  selected issue.
-- Documented command intent so `download` is clearly the targeted command,
-  while `sync-magazine` and `sync-feed` are archive update commands.
-- Reused existing manifest directories for explicit downloads so missing export
-  formats or audio can be regenerated without duplicate article folders.
-- Added `download --force` to explicitly refetch and rewrite existing article
-  exports.
-- Reused existing audio during downloads unless the audio file is missing or
-  `--force` is requested.
-- Documented that deleting one audio file is the narrow repair path for
-  regenerating only that article, while `--force` regenerates every selected
-  article.
-- Added retries for transient HTTP connection drops while fetching Domino pages.
-- Added friendly progress output for long download, retry, export, and audio
-  generation steps, with an interactive indeterminate progress bar, completion
-  check marks, and one total elapsed time per article.
-- Reworked `download` output into compact per-article status rows showing
-  export state, audio state, and elapsed time, with paths shown only in verbose
-  mode.
-- Handled `Ctrl-C` cleanly during downloads and speech synthesis, including
-  terminating active subprocesses and removing temporary `.aiff` files.
-- Added configurable `audio_timeout` and `--audio-timeout` handling so stuck
-  `say`, `afconvert`, or `ffmpeg` subprocesses are stopped and temporary
-  `.aiff` files are removed.
-- Serialized macOS `say` synthesis across concurrent CLI processes to avoid
-  overlapping Siri/neural TTS extension runs.
-- Added visible queued/audio-engine status and temporary AIFF byte-growth
-  feedback while generating audio.
-- Added chunked audio synthesis for long articles, with configurable chunk
-  size, parallelism, retries, and stall timeout. Chunk AIFF files are merged
-  before the final M4A/MP3 conversion to avoid silent truncation from one long
-  `say` process.
-- Kept multi-article downloads and syncs running when one article audio
-  conversion fails, then reported all audio failures at the end.
-- Added optional AI-assisted speech text normalization, disabled by default,
-  with a generic agent configuration and an implemented `codex exec` backend
-  that writes `<article-basename>.speech.txt` before audio synthesis.
-- Tightened the AI speech normalization prompt with conservative Italian
-  punctuation guidance for more natural TTS prosody without changing meaning.
-- Moved the Codex speech-normalization prompt into an installed, user-editable
-  template file configured by `speech_normalize_prompt_path`.
-- Improved `sync-feed` output so it prints the feed destination folder and each
-  downloaded article directory instead of only article titles.
-- Made `sync-feed --audio` and `sync-magazine --audio` generate missing audio
-  for articles already present in the local manifest, and added `--force` to
-  sync commands for explicit refetch/rewrite/regenerate runs.
-- Documented every `speech_normalize_*` config key in the README and config
-  example.
-- Removed source URLs from `article.txt` and `article.rtf` body text so speech
-  synthesis does not read article links aloud.
-- Added issue title and detected `di ...` author lines to generated article
-  text when that metadata is available.
-- Renamed article export files to match their containing folder, removed dates
-  from magazine article folder names, and slimmed `metadata.json` so it no
-  longer stores full article HTML or text.
-- Moved generated audio under `output_dir/audio/`, grouped by issue or feed, so
-  audio players can browse audio without article export files.
-- Added `voices` to list macOS `say` voice names and reject configured voices
-  that `say` would silently ignore.
-- Documented that Siri/neural voices require leaving `siri_voice` empty so
-  audio generation calls `say` without `-v` and uses the macOS system voice.
-- Replaced the redundant `weekly_output_dir` config key with
-  `feed_folder_name`, derived from the main `output_dir`.
-- Removed Domino header, featured, and separator images from exported article
-  HTML.
+- Packaged Python CLI named `get-my-domino`, installable with `uv` and the
+  project `Makefile`.
+- TOML configuration with subscriber credentials, output paths, export formats,
+  audio settings, and optional speech-normalization settings.
+- Login support for rivistadomino.it using configured credentials or
+  browser-assisted WordPress/WooCommerce cookies.
+- Subscriber catalog browsing for available Domino magazine issues, issue
+  contents, grouped sections, article order, and the recurring `La settimana di
+  Domino` feed.
+- Human-readable catalog output with `YYYY-MM` issue codes, publication dates,
+  issue summaries, grouped article trees, and optional feed listings.
+- Targeted downloads by article URL, by issue month plus article number, or by
+  complete issue with `download --issue YYYY-MM --all`.
+- Archive synchronization commands for magazine issues and feed articles,
+  including legacy aliases for earlier command names.
+- Incremental local storage using manifests so existing article exports and
+  audio are reused unless files are missing or `--force` is requested.
+- Clean article exports as HTML, UTF-8 text, optional RTF, and slim
+  `metadata.json` files without embedding full article bodies in metadata.
+- Configurable export format selection through `export_formats` and repeated
+  `--format` flags.
+- Magazine and feed folder layouts designed for browsing articles, plus a
+  separate `output_dir/audio/` tree for audio-player-friendly files.
+- Article text generation that includes issue title, article title, and detected
+  author lines while excluding source URLs from speech input.
+- HTML cleanup that removes Domino header, featured, and separator images from
+  exported article pages.
+- Local audio generation through macOS `say` plus `afconvert` for M4A/MP4A or
+  `ffmpeg` for MP3.
+- Support for the macOS system Siri/neural voice by leaving `siri_voice` empty,
+  plus a `voices` command for listing explicit `say` voices.
+- Chunked, serialized audio synthesis with retries, timeouts, temporary AIFF
+  cleanup, byte-growth feedback, and graceful `Ctrl-C` handling.
+- Multi-article download and sync runs continue after per-article audio errors
+  and report failed audio files at the end.
+- Friendly progress and status output for downloads, exports, reused files,
+  audio generation, retries, and elapsed per-article timing.
+- Optional AI-assisted speech text normalization through a generic external
+  agent interface and an implemented Codex CLI backend.
+- Installed, user-editable Codex speech-normalization prompt template for
+  conservative Italian TTS cleanup without summarizing or rewriting articles.
+- Documentation for commands, configuration keys, speech normalization, audio
+  repair workflows, and release maintenance.
