@@ -50,7 +50,7 @@ class AppConfig:
     feed_index_url: str = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
     feed_folder_name: str = "la-settimana-di-domino"
     request_timeout: float = 30.0
-    user_agent: str = "get-my-domino/0.1.0"
+    user_agent: str = "get-my-domino/0.1.1"
     issue_link_patterns: tuple[str, ...] = ("?sfoglia=1",)
     article_link_patterns: tuple[str, ...] = ("/blog/20",)
     feed_article_link_patterns: tuple[str, ...] = ("/blog/20",)
@@ -194,7 +194,7 @@ def load_config(path: Path) -> AppConfig:
             )
         ),
         request_timeout=float(data.get("request_timeout", 30.0)),
-        user_agent=str(data.get("user_agent", "get-my-domino/0.1.0")),
+        user_agent=str(data.get("user_agent", "get-my-domino/0.1.1")),
         issue_link_patterns=_string_tuple(data, "issue_link_patterns", ("?sfoglia=1",)),
         article_link_patterns=_string_tuple(data, "article_link_patterns", ("/blog/20",)),
         feed_article_link_patterns=_string_tuple(

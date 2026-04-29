@@ -771,7 +771,7 @@ make run
 ```
 
 When the Domino site layout changes, start with the maintainer note at
-[docs/domino-site-structure.md](/Users/mmassari/Development/get-my-domino/docs/domino-site-structure.md).
+[docs/domino-site-structure.md](docs/domino-site-structure.md).
 It documents the current crawl entry points, issue/feed selectors, article
 extraction assumptions, and which config keys usually let you patch the scraper
 without changing code.

@@ -1039,6 +1039,62 @@ def test_download_issue_all_can_package_issue_audiobook(
     assert payload["published_date"] == "2026-04-21"
 
 
+def test_download_issue_all_skips_audiobook_for_empty_issue(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/numero-vuoto/?sfoglia=1"
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">8/2022 Numero vuoto</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/numero-vuoto?sfoglia=1": """
+            <article class="product">
+              <div class="summary">
+                <h1 class="product_title">Numero vuoto</h1>
+                <p>8/2022 Numero vuoto Nessun articolo disponibile</p>
+              </div>
+              <div id="tab-articles"></div>
+            </article>
+            """,
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    def fake_build_m4b(*args: object, **kwargs: object) -> Path:
+        del args, kwargs
+        raise AssertionError("audiobook packaging should be skipped for empty issues")
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    result = cli._download_issue_articles(
+        issue_selector="2022-08",
+        config=config,
+        root_output_dir=config.output_dir,
+        create_audio=False,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+    )
+
+    assert result == 0
+    issue_json = (
+        tmp_path / "exports" / "library" / "rivista" / "2022-08-numero-vuoto" / "issue.json"
+    )
+    payload = json.loads(issue_json.read_text(encoding="utf-8"))
+    assert payload["article_count"] == 0
+    assert payload["articles"] == []
+    assert payload["chapters"] == []
+
+
 def test_issue_audiobook_falls_back_to_legacy_audio_names(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -2436,6 +2492,53 @@ def test_sync_magazine_uses_tabular_output(
     assert "issue: Guaio persiano" in captured.out
     assert "written" in captured.out
     assert "downloaded:" not in captured.out
+
+
+def test_sync_magazine_skips_empty_issue_audiobook_plans(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_link = Link(
+        title="8/2022 Numero vuoto",
+        url="https://www.rivistadomino.it/prodotto/numero-vuoto?sfoglia=1",
+    )
+    issue = Issue(
+        title="Numero vuoto",
+        url=issue_link.url,
+        issue_code="2022-08",
+        articles=[],
+    )
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            assert url == issue_link.url
+            return issue
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", lambda *args, **kwargs: 0)
+
+    def fake_build_issue_audiobook(*args: object, **kwargs: object) -> Path:
+        del args, kwargs
+        raise AssertionError("empty issues should not be packaged as audiobooks")
+
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", audiobook_auto=True),
+        create_audio=False,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    assert result == 0
 
 
 def test_audio_timeout_must_be_positive() -> None:

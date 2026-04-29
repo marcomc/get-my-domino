@@ -18,9 +18,9 @@ points plus HTML selectors and URL patterns:
 
 The most important implementation points are:
 
-- [src/get_my_domino/web.py](/Users/mmassari/Development/get-my-domino/src/get_my_domino/web.py)
-- [src/get_my_domino/extract.py](/Users/mmassari/Development/get-my-domino/src/get_my_domino/extract.py)
-- [src/get_my_domino/config.py](/Users/mmassari/Development/get-my-domino/src/get_my_domino/config.py)
+- [src/get_my_domino/web.py](../src/get_my_domino/web.py)
+- [src/get_my_domino/extract.py](../src/get_my_domino/extract.py)
+- [src/get_my_domino/config.py](../src/get_my_domino/config.py)
 
 ## Crawl Entry Points
 
@@ -235,7 +235,7 @@ Code changes are usually only needed when:
 ## Regression Tests That Lock This In
 
 The main tests describing the current structure are in
-[tests/test_cli.py](/Users/mmassari/Development/get-my-domino/tests/test_cli.py):
+[tests/test_cli.py](../tests/test_cli.py):
 
 - `test_feed_articles_follow_pagination_and_deduplicate`
 - `test_issue_articles_keep_month_groups_dates_and_order`

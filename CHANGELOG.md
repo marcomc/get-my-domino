@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-30
+
 ### Issue Audiobooks
 
 - Optional issue-level `.m4b` audiobook packaging for `download --issue

@@ -4,7 +4,7 @@ This scaffold is intentionally opinionated.
 
 ## Maintainer Docs
 
-- [Domino Site Structure Notes](/Users/mmassari/Development/get-my-domino/docs/domino-site-structure.md)
+- [Domino Site Structure Notes](domino-site-structure.md)
   documents the current subscriber index, issue page, feed page, and article
   selectors that the scraper depends on, plus the config-first and code-level
   places to patch if `rivistadomino.it` changes.

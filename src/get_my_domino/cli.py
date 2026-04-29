@@ -2383,7 +2383,7 @@ def _download_issue_articles(
         article_dirs=resolved_article_dirs,
         cover_image_path=cover_image_path,
     )
-    if result != 0 or not create_audiobook:
+    if result != 0 or not create_audiobook or not issue.articles:
         return result
     with _progress_step(f"Packaging audiobook {issue_dir.name}.m4b"):
         _build_issue_audiobook(
@@ -2662,7 +2662,11 @@ def _handle_sync(
             article_dirs=issue_article_dirs,
             cover_image_path=cover_image_path,
         )
-        if create_audiobook and len(issue_article_dirs) == len(issue_detail.articles):
+        if (
+            create_audiobook
+            and issue_detail.articles
+            and len(issue_article_dirs) == len(issue_detail.articles)
+        ):
             issue_bundle_plans.append(
                 IssueBundlePlan(
                     issue=issue_detail,
