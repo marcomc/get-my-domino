@@ -38,6 +38,8 @@ local `.m4a` or `.mp3` audio files with the macOS `say` voice engine.
   cover art, and issue metadata when downloading or syncing magazine issues
 - Issue sidecars as `issue.json` with title, issue URL, release date, summary,
   cover paths, section/order data, and article-folder mapping
+- Repair commands to refresh issue metadata from the live site and repackage
+  issue audiobooks without regenerating chapter audio
 - Default config file at `~/.config/get-my-domino/config.toml`
 - Saved authenticated sessions at `~/.config/get-my-domino/session.json`
 - Separate sync flow for `La settimana di Domino`
@@ -239,6 +241,8 @@ Command intent:
 | `download` | Downloads known targets by URL, one issue article, or one whole issue | Manual, targeted downloads and repairs |
 | `sync-magazine` | Scans every available magazine issue and downloads only missing articles; with `--audio`, also generates missing audio for already synced articles | Periodic archive updates and automation |
 | `sync-feed` | Scans the recurring weekly feed and downloads only missing articles; with `--audio`, also generates missing audio for already synced feed articles | Periodic weekly-feed updates and automation |
+| `refresh-issue-metadata` | Re-reads downloaded issue articles from the live site and refreshes local `metadata.json` plus `issue.json` | Metadata repairs after parser improvements or site changes |
+| `repackage-audiobook` | Runs issue-metadata refresh, then rebuilds the issue `.m4b` from existing chapter audio | Audiobook tag and cover repairs without re-synthesizing audio |
 
 `download` is intentionally narrow: it does not scan the whole archive unless
 you select one issue with `--issue` and `--all`. `sync-magazine` is the
@@ -275,6 +279,20 @@ article order prefix such as `01-`, `02-`, and so on.
 
 Issue sidecars also keep contributor metadata per article and as a deduplicated
 issue-level contributor list under `contributors`.
+
+When you already have the articles and chapter audio on disk, use the repair
+commands instead of `download --force`:
+
+```bash
+get-my-domino refresh-issue-metadata --issue 2026-04
+get-my-domino repackage-audiobook --issue 2026-04
+```
+
+`refresh-issue-metadata` updates the per-article `metadata.json` files and the
+issue-level `issue.json` from the live site, but does not regenerate chapter
+audio and does not rebuild the `.m4b`. `repackage-audiobook` depends on that
+refresh step and then rebuilds the `.m4b` from the existing `.m4a` chapter
+files already present under `output_dir/audio/`.
 
 Download specific articles:
 

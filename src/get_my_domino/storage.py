@@ -77,6 +77,24 @@ def write_article_export(
     )
 
 
+def write_article_metadata(
+    target_dir: Path,
+    article: Article,
+    *,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "metadata.json").write_text(
+        json.dumps(
+            article_metadata(article, metadata=metadata),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _remove_legacy_export_files(target_dir: Path) -> None:
     for name in ("article.html", "article.txt", "article.rtf"):
         (target_dir / name).unlink(missing_ok=True)

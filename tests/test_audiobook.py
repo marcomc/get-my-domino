@@ -48,6 +48,7 @@ def test_build_m4b_places_cover_input_before_cover_mapping(
     assert ffmpeg_command[cover_input_index - 1] == "-i"
     assert cover_input_index < first_map_index
     assert first_map_index < cover_map_index
+    assert ffmpeg_command[ffmpeg_command.index("-c:v") + 1] == "png"
 
 
 def test_build_m4b_writes_chapter_contributor_metadata(
@@ -94,3 +95,41 @@ def test_build_m4b_writes_chapter_contributor_metadata(
     assert "contributors=Dario Fabbri" in ffmetadata
     assert "title=Chapter 1 (di Dario Fabbri)" in ffmetadata
     assert "artist=Dario Fabbri" in ffmetadata
+
+
+def test_build_m4b_keeps_jpeg_cover_without_reencoding(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    audio_path = tmp_path / "chapter.m4a"
+    cover_path = tmp_path / "cover.jpg"
+    output_path = tmp_path / "book.m4b"
+    audio_path.write_bytes(b"audio")
+    cover_path.write_bytes(b"cover")
+    commands: list[list[str]] = []
+
+    def fake_which(name: str) -> str:
+        return f"/usr/bin/{name}"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(command)
+        if "ffprobe" in command[0]:
+            return subprocess.CompletedProcess(command, 0, stdout="12.5\n", stderr="")
+        if "ffmpeg" in command[0]:
+            output_path.write_bytes(b"book")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        raise AssertionError(command)
+
+    monkeypatch.setattr("shutil.which", fake_which)
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    build_m4b(
+        output_path,
+        title="Example Issue",
+        chapters=[AudiobookChapter(title="Chapter 1", audio_path=audio_path)],
+        cover_image_path=cover_path,
+    )
+
+    ffmpeg_command = next(command for command in commands if "ffmpeg" in command[0])
+    assert ffmpeg_command[ffmpeg_command.index("-c:v") + 1] == "copy"

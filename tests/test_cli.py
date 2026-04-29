@@ -109,6 +109,16 @@ def test_unknown_command_prints_friendly_suggestion(capsys: CaptureFixture[str])
     assert "choose from" not in captured.err
 
 
+def test_main_help_mentions_refresh_and_repackage_commands(capsys: CaptureFixture[str]) -> None:
+    result = cli.main([])
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "refresh-issue-metadata" in captured.out
+    assert "repackage-audiobook" in captured.out
+
+
 def test_console_main_reads_sys_argv(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]) -> None:
     monkeypatch.setattr("sys.argv", ["get-my-domino", "--version"])
 
@@ -935,6 +945,8 @@ def test_download_issue_all_can_package_issue_audiobook(
     assert packaged[0]["chapters"][0].contributor == "Dario Fabbri"
     metadata = packaged[0]["metadata"]
     assert metadata is not None
+    assert metadata["artist"] == "Dario Fabbri, Federico Petroni"
+    assert metadata["album_artist"] == "Dario Fabbri, Federico Petroni"
     assert metadata["date"] == "2026-04-21"
     assert metadata["publisher"] == "Rivista Domino"
     assert metadata["composer"] == "Dario Fabbri, Federico Petroni"
@@ -998,6 +1010,138 @@ def test_issue_audiobook_falls_back_to_legacy_audio_names(
     )
 
     assert packaged[0]["chapters"][0].audio_path == legacy_audio
+
+
+def test_refresh_issue_metadata_updates_article_and_issue_sidecars(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
+    article_url = "https://www.rivistadomino.it/blog/2026/04/21/e-la-casa-bianca-resto-sola"
+    issue_dir = tmp_path / "exports" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "02-la-guerra-va-male" / "02-2026-04-21-e-la-casa-bianca-rest-sola"
+    article_dir.mkdir(parents=True)
+    write_manifest(tmp_path / "exports", {article_url: str(article_dir)})
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">4/2026 Guaio persiano</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/guaio-persiano?sfoglia=1": f"""
+            <article class="product">
+              <div class="summary">
+                <h1 class="product_title">Guaio persiano</h1>
+                <p>4/2026 Guaio persiano La crisi spiegata</p>
+              </div>
+              <div id="tab-articles">
+                <h3>La guerra va male</h3>
+                <a class="article_title" href="{article_url}">E la Casa Bianca restò sola</a>
+                <div class="article_byline">Lorenzo Maria Ricci</div>
+              </div>
+            </article>
+            """,
+            article_url: """
+            <html>
+              <head><meta name="author" content="Lorenzo Maria Ricci"></head>
+              <body>
+                <article>
+                  <h1>E la Casa Bianca restò sola</h1>
+                  <div class="article_byline">
+                    <a href="/blog/author/l-m-ricci/">Lorenzo Maria Ricci</a>
+                  </div>
+                  <p>Corpo.</p>
+                </article>
+              </body>
+            </html>
+            """,
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    result = cli._handle_refresh_issue_metadata(
+        config,
+        output_dir=config.output_dir,
+        all_issues=False,
+        issue_selector="2026-04",
+    )
+
+    assert result == 0
+    metadata = json.loads((article_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["author"] == "Lorenzo Maria Ricci"
+    issue_sidecar = json.loads((issue_dir / "issue.json").read_text(encoding="utf-8"))
+    assert issue_sidecar["contributors"] == ["Lorenzo Maria Ricci"]
+    assert issue_sidecar["articles"][0]["author"] == "Lorenzo Maria Ricci"
+
+
+def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path) -> None:
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        published_month="2026-04",
+        articles=[],
+    )
+    plan = cli.IssueBundlePlan(
+        issue=issue,
+        issue_dir=tmp_path / "exports" / "2026-04-guaio-persiano",
+        article_dirs=[],
+    )
+    events: list[str] = []
+
+    class DummyClient:
+        pass
+
+    def fake_selected_issue_details_or_error(
+        client: object, *, all_issues: bool, issue_selector: str | None
+    ) -> list[Issue]:
+        del client, all_issues, issue_selector
+        return [issue]
+
+    def fake_refresh_downloaded_issue_metadata(
+        client: object,
+        refreshed_issue: Issue,
+        *,
+        output_dir: Path,
+    ) -> tuple[cli.IssueBundlePlan, Path | None]:
+        del client, refreshed_issue, output_dir
+        events.append("refresh")
+        return plan, tmp_path / "cover.png"
+
+    def fake_build_issue_audiobook(
+        packaged_plan: cli.IssueBundlePlan,
+        *,
+        output_dir: Path,
+        cover_image_path: Path | None,
+    ) -> Path:
+        del packaged_plan, output_dir, cover_image_path
+        events.append("package")
+        return tmp_path / "exports" / "audiobooks" / "2026-04-guaio-persiano.m4b"
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(cli, "WebClient", lambda config: DummyClient())
+    monkeypatch.setattr(
+        cli, "_selected_issue_details_or_error", fake_selected_issue_details_or_error
+    )
+    monkeypatch.setattr(
+        cli, "_refresh_downloaded_issue_metadata", fake_refresh_downloaded_issue_metadata
+    )
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+    try:
+        result = cli._handle_repackage_audiobook(
+            AppConfig(output_dir=tmp_path / "exports"),
+            output_dir=tmp_path / "exports",
+            all_issues=False,
+            issue_selector="2026-04",
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert result == 0
+    assert events == ["refresh", "package"]
 
 
 def test_resolved_issue_article_dirs_prefers_manifest_paths_for_legacy_issue_tree(
@@ -1543,6 +1687,74 @@ def test_extract_article_reads_byline_author() -> None:
     assert article.author == "Dario Fabbri"
 
 
+def test_extract_article_prefers_meta_author_over_site_header_text() -> None:
+    article = extract_article(
+        """
+        <html>
+          <head>
+            <meta name="author" content="Lorenzo Maria Ricci">
+            <title>Titolo - Rivista Domino</title>
+          </head>
+          <body>
+            <header><span>diretta da Dario Fabbri</span></header>
+            <article>
+              <h1>Titolo</h1>
+              <div class="article_byline">
+                <a href="/blog/author/l-m-ricci/">Lorenzo Maria Ricci</a>
+              </div>
+              <p>Corpo.</p>
+            </article>
+          </body>
+        </html>
+        """,
+        page_url="https://example.test/articolo/",
+        content_selectors=("article",),
+    )
+
+    assert article.author == "Lorenzo Maria Ricci"
+
+
+def test_extract_article_reads_adjacent_article_byline() -> None:
+    article = extract_article(
+        """
+        <article>
+          <h1>E la Casa Bianca resto sola</h1>
+          <div class="article_byline">
+            <a href="/blog/author/l-m-ricci/">Lorenzo Maria Ricci</a>
+          </div>
+          <p>Corpo.</p>
+        </article>
+        """,
+        page_url="https://example.test/articolo/",
+        content_selectors=("article",),
+    )
+
+    assert article.author == "Lorenzo Maria Ricci"
+
+
+def test_extract_article_accepts_initials_in_explicit_author_fields() -> None:
+    article = extract_article(
+        """
+        <html>
+          <head>
+            <meta name="author" content="Z. Goggi">
+          </head>
+          <body>
+            <article>
+              <h1>Iran, ennesimo equivoco</h1>
+              <div class="article_byline"><a href="/blog/author/z-goggi/">Z. Goggi</a></div>
+              <p><em>Libro dei mutamenti</em> non e autore.</p>
+            </article>
+          </body>
+        </html>
+        """,
+        page_url="https://example.test/articolo/",
+        content_selectors=("article",),
+    )
+
+    assert article.author == "Z. Goggi"
+
+
 def test_extract_article_normalizes_domino_directed_by_author() -> None:
     article = extract_article(
         "<article><h1>Titolo</h1><p>diretta da Dario Fabbri</p><p>Corpo.</p></article>",
@@ -1639,6 +1851,12 @@ def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
 
     feed_args = parser.parse_args(["sync-feed", "--no-audio"])
     assert cli._audio_options(feed_args, config).create is False
+
+    audiobook_no_audio_args = parser.parse_args(
+        ["download", "--issue", "2026-04", "--all", "--audiobook", "--no-audio"]
+    )
+    audiobook_no_audio_options = cli._audio_options(audiobook_no_audio_args, config)
+    assert audiobook_no_audio_options.create is False
 
     download_args = parser.parse_args(
         [

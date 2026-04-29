@@ -48,6 +48,7 @@ from .storage import (
     read_manifest,
     write_article,
     write_article_export,
+    write_article_metadata,
     write_article_named,
     write_issue_metadata,
     write_manifest,
@@ -68,6 +69,8 @@ COMMAND_NAMES = (
     "sync",
     "sync-feed",
     "sync-weekly",
+    "refresh-issue-metadata",
+    "repackage-audiobook",
     "speak",
     "speech-normalize",
     "voices",
@@ -125,6 +128,8 @@ def format_main_help() -> str:
             "  download      Download selected URLs or articles from one issue",
             "  sync-magazine Download new magazine articles",
             "  sync-feed     Download new weekly feed articles",
+            "  refresh-issue-metadata Refresh metadata.json and issue.json for downloaded issues",
+            "  repackage-audiobook Refresh issue metadata and rebuild issue audiobooks",
             "  speech-normalize Prepare downloaded text for text-to-speech",
             "  speak         Convert downloaded article text to audio",
             "  voices        List macOS say voices available for audio",
@@ -331,6 +336,44 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Number of feed archive pages to scan. Defaults to 1.",
+    )
+
+    refresh_issue_parser = subparsers.add_parser(
+        "refresh-issue-metadata",
+        help="Refresh article metadata.json and issue.json for downloaded magazine issues.",
+    )
+    refresh_issue_parser.add_argument(
+        "--issue",
+        help="Refresh one issue by YYYY-MM issue code or by issue URL.",
+    )
+    refresh_issue_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Refresh metadata for every available issue already present in the archive.",
+    )
+    refresh_issue_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory containing downloaded issue folders. Defaults to config output_dir.",
+    )
+
+    repackage_parser = subparsers.add_parser(
+        "repackage-audiobook",
+        help="Refresh issue metadata and rebuild issue .m4b audiobooks from existing audio files.",
+    )
+    repackage_parser.add_argument(
+        "--issue",
+        help="Repackage one issue by YYYY-MM issue code or by issue URL.",
+    )
+    repackage_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Repackage every available issue already present in the archive.",
+    )
+    repackage_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory containing downloaded issue folders. Defaults to config output_dir.",
     )
 
     speak_parser = subparsers.add_parser(
@@ -1294,6 +1337,119 @@ def _resolved_issue_article_dirs(
     return resolved_dirs
 
 
+def _planned_issue_article_dirs(issue: Issue, *, issue_dir: Path) -> list[Path]:
+    group_indexes = _group_indexes(issue.articles)
+    planned_dirs: list[Path] = []
+    for fallback_index, article_link in enumerate(issue.articles, start=1):
+        group_name = article_link.group or "Articoli"
+        planned_dirs.append(
+            issue_dir
+            / _group_folder_name(group_name, group_indexes[group_name])
+            / _article_folder_name(
+                article_link,
+                fallback_index=article_link.order or fallback_index,
+            )
+        )
+    return planned_dirs
+
+
+def _stored_issue_article_dirs(
+    issue: Issue,
+    *,
+    issue_dir: Path,
+    output_dir: Path,
+) -> list[Path]:
+    manifest = read_manifest(output_dir)
+    planned_dirs = {
+        article.url: planned_dir
+        for article, planned_dir in zip(
+            issue.articles,
+            _planned_issue_article_dirs(issue, issue_dir=issue_dir),
+            strict=True,
+        )
+    }
+    stored_dirs = _resolved_issue_article_dirs(
+        issue,
+        output_dir=output_dir,
+        planned_dirs=planned_dirs,
+    )
+    missing_dirs = [path for path in stored_dirs if not path.exists()]
+    if missing_dirs:
+        raise ValueError(
+            "Missing article directories for issue "
+            f"{issue.published_month or issue.title}: {missing_dirs[0]}"
+        )
+    for article, stored_dir in zip(issue.articles, stored_dirs, strict=True):
+        manifest[article.url] = str(stored_dir)
+    write_manifest(output_dir, manifest)
+    return stored_dirs
+
+
+def _issue_article_metadata(issue: Issue, article: Link) -> dict[str, object]:
+    return {
+        "issue_title": issue.title,
+        "issue_month": issue.published_month,
+        "section": article.group or "Articoli",
+        "order": article.order,
+        "published_date": article.published_date,
+    }
+
+
+def _refresh_downloaded_issue_metadata(
+    client: WebClient,
+    issue: Issue,
+    *,
+    output_dir: Path,
+) -> tuple[IssueBundlePlan, Path | None]:
+    issue_dir = output_dir / _issue_folder_name(issue.title, issue.published_month)
+    article_dirs = _stored_issue_article_dirs(
+        issue,
+        issue_dir=issue_dir,
+        output_dir=output_dir,
+    )
+    for article_link, article_dir in zip(issue.articles, article_dirs, strict=True):
+        with _progress_step("Downloading article metadata"):
+            article = client.download_article(article_link.url)
+        article = replace(article, issue_title=issue.title)
+        with _progress_step(f"Refreshing metadata in {article_dir.name}"):
+            write_article_metadata(
+                article_dir,
+                article,
+                metadata=_issue_article_metadata(issue, article_link),
+            )
+    cover_image_path = _ensure_issue_cover(client, issue, issue_dir=issue_dir, force=False)
+    _write_issue_sidecar(
+        issue,
+        issue_dir=issue_dir,
+        article_dirs=article_dirs,
+        cover_image_path=cover_image_path,
+    )
+    return (
+        IssueBundlePlan(issue=issue, issue_dir=issue_dir, article_dirs=article_dirs),
+        cover_image_path,
+    )
+
+
+def _selected_issue_details_or_error(
+    client: WebClient,
+    *,
+    all_issues: bool,
+    issue_selector: str | None,
+) -> list[Issue]:
+    if not all_issues and issue_selector is None:
+        raise ValueError("Use --issue YYYY-MM or --all.")
+    issues = _sort_catalog_issues(client.discover_issues())
+    selected = _selected_catalog_issues(
+        client,
+        issues,
+        all_issues=all_issues,
+        issue_selector=issue_selector,
+    )
+    if not selected:
+        raise ValueError("No issues selected.")
+    return selected
+
+
 def _issue_cover_path(issue_dir: Path, issue: Issue) -> Path | None:
     if not issue.cover_image_url:
         return None
@@ -1415,17 +1571,17 @@ def _build_issue_audiobook(
         )
     ]
     metadata_title = plan.issue.title
+    joined_contributors = ", ".join(contributors) if contributors else None
     metadata: dict[str, str] = {
         "title": metadata_title,
         "album": metadata_title,
-        "artist": "Rivista Domino",
-        "album_artist": "Rivista Domino",
+        "artist": joined_contributors or "Rivista Domino",
+        "album_artist": joined_contributors or "Rivista Domino",
         "publisher": "Rivista Domino",
         "genre": "Magazine",
         "comment": plan.issue.url,
     }
-    if contributors:
-        joined_contributors = ", ".join(contributors)
+    if joined_contributors:
         metadata["composer"] = joined_contributors
         metadata["contributors"] = joined_contributors
     release_date = _issue_release_date(plan.issue)
@@ -2182,6 +2338,54 @@ def _handle_sync_feed(
     )
 
 
+def _handle_refresh_issue_metadata(
+    config: AppConfig,
+    *,
+    output_dir: Path,
+    all_issues: bool,
+    issue_selector: str | None,
+) -> int:
+    client = WebClient(config)
+    issues = _selected_issue_details_or_error(
+        client,
+        all_issues=all_issues,
+        issue_selector=issue_selector,
+    )
+    for issue in issues:
+        print(f"issue: {issue.title}")
+        _refresh_downloaded_issue_metadata(client, issue, output_dir=output_dir)
+    return 0
+
+
+def _handle_repackage_audiobook(
+    config: AppConfig,
+    *,
+    output_dir: Path,
+    all_issues: bool,
+    issue_selector: str | None,
+) -> int:
+    client = WebClient(config)
+    issues = _selected_issue_details_or_error(
+        client,
+        all_issues=all_issues,
+        issue_selector=issue_selector,
+    )
+    for issue in issues:
+        print(f"issue: {issue.title}")
+        plan, cover_image_path = _refresh_downloaded_issue_metadata(
+            client,
+            issue,
+            output_dir=output_dir,
+        )
+        with _progress_step(f"Packaging audiobook {plan.issue_dir.name}.m4b"):
+            _build_issue_audiobook(
+                plan,
+                output_dir=output_dir,
+                cover_image_path=cover_image_path,
+            )
+    return 0
+
+
 def _resolve_text_paths(output_dir: Path, paths: list[Path]) -> list[Path]:
     if paths:
         candidates = paths
@@ -2377,7 +2581,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             audio_options = _audio_options(args, config)
             create_audiobook = _audiobook_requested(args)
             if create_audiobook:
-                audio_options = replace(audio_options, create=True)
+                if not bool(getattr(args, "no_audio", False)):
+                    audio_options = replace(audio_options, create=True)
                 if audio_options.audio_format != "m4a":
                     raise ValueError("Issue audiobook packaging requires --audio-format m4a.")
             speech_options = _speech_normalize_options(args, config)
@@ -2450,7 +2655,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             audio_options = _audio_options(args, config)
             create_audiobook = _audiobook_requested(args)
             if create_audiobook:
-                audio_options = replace(audio_options, create=True)
+                if not bool(getattr(args, "no_audio", False)):
+                    audio_options = replace(audio_options, create=True)
                 if audio_options.audio_format != "m4a":
                     raise ValueError("Issue audiobook packaging requires --audio-format m4a.")
             speech_options = _speech_normalize_options(args, config)
@@ -2490,6 +2696,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_articles=args.max_articles,
                 pages=int(args.pages),
                 force=bool(args.force),
+            )
+        if args.command == "refresh-issue-metadata":
+            return _handle_refresh_issue_metadata(
+                config,
+                output_dir=args.output_dir or config.output_dir,
+                all_issues=bool(args.all),
+                issue_selector=args.issue,
+            )
+        if args.command == "repackage-audiobook":
+            return _handle_repackage_audiobook(
+                config,
+                output_dir=args.output_dir or config.output_dir,
+                all_issues=bool(args.all),
+                issue_selector=args.issue,
             )
         if args.command == "speak":
             voice = args.voice if args.voice is not None else config.siri_voice

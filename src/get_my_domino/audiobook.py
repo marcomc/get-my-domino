@@ -94,12 +94,13 @@ def build_m4b(
             ]
         )
         if cover_image_path is not None:
+            cover_codec = _cover_codec(cover_image_path)
             command.extend(
                 [
                     "-map",
                     "2:v:0",
                     "-c:v",
-                    "mjpeg",
+                    cover_codec,
                     "-disposition:v:0",
                     "attached_pic",
                 ]
@@ -190,3 +191,12 @@ def _ffmetadata_escape(value: str) -> str:
         .replace("#", "\\#")
         .replace("\n", " ")
     )
+
+
+def _cover_codec(cover_image_path: Path) -> str:
+    suffix = cover_image_path.suffix.lower()
+    if suffix == ".png":
+        return "png"
+    if suffix in {".jpg", ".jpeg"}:
+        return "copy"
+    return "png"

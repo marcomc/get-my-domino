@@ -20,6 +20,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Issue-level contributor metadata in audiobook packaging, using article author
   sidecars to populate the issue `composer` tag, issue-sidecar contributor
   lists, and chapter titles such as `Title (di Author)`.
+- New repair commands: `refresh-issue-metadata` to refresh downloaded issue
+  metadata without touching audio, and `repackage-audiobook` to refresh that
+  metadata and rebuild the `.m4b` from existing chapter audio.
+- Fixed article-author extraction to prefer explicit metadata and
+  `article_byline` markup over unrelated site chrome text, including authors
+  with initials such as `Z. Goggi`.
+- Fixed `--no-audio` so it is respected even when `--audiobook` is requested.
 - Documentation for choosing a specific Codex model for speech normalization
   through config or `--speech-normalize-model`, including examples for
   `gpt-5.3-codex-spark`.
