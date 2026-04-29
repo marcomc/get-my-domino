@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -97,6 +98,11 @@ class WebClient:
     def discover_issue(self, issue_url: str) -> Issue:
         html = self.fetch_text(issue_url)
         return self._extract_issue(html, page_url=issue_url)
+
+    def download_binary(self, url: str) -> bytes:
+        self.authenticate()
+        response = self._request("GET", url)
+        return response.content
 
     def discover_feed_articles(self, *, max_pages: int = 1) -> list[Link]:
         links: list[Link] = []
@@ -288,6 +294,8 @@ class WebClient:
             else soup.get_text(" ", strip=True)
         )
         published_month = issue_month_from_text(summary_text)
+        cover_image_url = self._issue_cover_image_url(soup, page_url=page_url)
+        summary_description = self._issue_summary_description(summary_text, title=title)
 
         article_panel = soup.select_one("#tab-articles")
         if article_panel is None:
@@ -295,6 +303,8 @@ class WebClient:
                 title=title,
                 url=page_url,
                 published_month=published_month,
+                cover_image_url=cover_image_url,
+                summary=summary_description,
                 articles=extract_links(
                     html,
                     page_url=page_url,
@@ -331,7 +341,45 @@ class WebClient:
             )
             order += 1
 
-        return Issue(title=title, url=page_url, published_month=published_month, articles=articles)
+        return Issue(
+            title=title,
+            url=page_url,
+            published_month=published_month,
+            articles=articles,
+            cover_image_url=cover_image_url,
+            summary=summary_description,
+        )
+
+    def _issue_cover_image_url(self, soup: BeautifulSoup, *, page_url: str) -> str | None:
+        selectors = (
+            ".woocommerce-product-gallery__image img",
+            ".product img",
+            ".summary img",
+            "meta[property='og:image']",
+        )
+        for selector in selectors:
+            element = soup.select_one(selector)
+            if not isinstance(element, Tag):
+                continue
+            raw_url = element.get("content") or element.get("src")
+            if not raw_url:
+                continue
+            return urljoin(page_url, str(raw_url))
+        return None
+
+    def _issue_summary_description(self, summary_text: str, *, title: str) -> str | None:
+        cleaned = " ".join(summary_text.split())
+        cleaned = cleaned.replace(title, " ").strip(" -–—:")
+        cleaned = re.sub(
+            r"\bProdotto attualmente non disponibile in formato cartaceo\b.*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\bAcquista su Amazon\b.*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bSfoglia la rivista\b.*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = " ".join(cleaned.split())
+        return cleaned or None
 
 
 def fetch_text(url: str, config: AppConfig) -> str:

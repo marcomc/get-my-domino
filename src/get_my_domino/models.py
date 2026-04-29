@@ -20,6 +20,8 @@ class Issue:
     url: str
     published_month: str | None
     articles: list[Link]
+    cover_image_url: str | None = None
+    summary: str | None = None
 
 
 @dataclass(frozen=True)

@@ -194,3 +194,17 @@ def write_manifest(output_dir: Path, manifest: dict[str, str]) -> None:
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def issue_metadata_path(issue_dir: Path) -> Path:
+    return issue_dir / "issue.json"
+
+
+def write_issue_metadata(issue_dir: Path, payload: dict[str, object]) -> Path:
+    issue_dir.mkdir(parents=True, exist_ok=True)
+    path = issue_metadata_path(issue_dir)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return path

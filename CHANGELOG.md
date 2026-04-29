@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Issue Audiobooks
+
+- Optional issue-level `.m4b` audiobook packaging for `download --issue
+  YYYY-MM --all --audiobook` and `sync-magazine --audiobook`, including chapter
+  markers from article order, embedded cover art, and issue metadata tags.
+- Issue-level `issue.json` sidecars that capture the issue URL, release date,
+  cover image path, publisher tag, summary text, and per-article directory
+  mapping for downloaded magazine issues.
+- Compatibility fallback for existing issue archives whose chapter audio files
+  still use older order-prefixed filenames, so audiobook packaging can reuse
+  mixed legacy and current audio trees.
+- Issue-level contributor metadata in audiobook packaging, using article author
+  sidecars to populate the issue `composer` tag, issue-sidecar contributor
+  lists, and chapter titles such as `Title (di Author)`.
+- Documentation for choosing a specific Codex model for speech normalization
+  through config or `--speech-normalize-model`, including examples for
+  `gpt-5.3-codex-spark`.
+- Refreshed the OpenAI model-availability documentation for speech
+  normalization as of April 29, 2026, separating ChatGPT/Codex subscription
+  availability from API model availability and clarifying that
+  `gpt-5.3-codex-spark` remains a research preview.
+- Maintainer documentation for the current Domino site structure, including the
+  subscriber issue index, issue article-tab parsing, feed pagination, article
+  extraction selectors, and the config/code touchpoints to update if the site
+  markup changes.
+
 ## [0.1.0] - 2026-04-28
 
 ### Added

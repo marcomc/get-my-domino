@@ -19,6 +19,7 @@ from typing import Sequence
 
 from . import __version__
 from .audio import AudioError, available_say_voices, normalize_audio_format, synthesize_audio
+from .audiobook import AudiobookChapter, AudiobookError, build_m4b
 from .browser_auth import BrowserAuthError, login_with_browser
 from .config import (
     DEFAULT_CONFIG_PATH,
@@ -48,6 +49,7 @@ from .storage import (
     write_article,
     write_article_export,
     write_article_named,
+    write_issue_metadata,
     write_manifest,
 )
 from .web import FetchError, WebClient, discover_articles, discover_feed_articles, discover_issues
@@ -89,6 +91,13 @@ class AudioFailure:
     label: str
     target_dir: Path
     error: str
+
+
+@dataclass(frozen=True)
+class IssueBundlePlan:
+    issue: Issue
+    issue_dir: Path
+    article_dirs: list[Path]
 
 
 @dataclass(frozen=True)
@@ -277,6 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory for exported article folders. Defaults to config output_dir.",
     )
+    _add_issue_audiobook_option(download_parser)
     _add_export_format_options(download_parser)
     _add_audio_options(download_parser)
 
@@ -285,6 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["sync"],
         help="Download new magazine issue articles.",
     )
+    _add_issue_audiobook_option(sync_parser)
     _add_audio_options(sync_parser)
     _add_export_format_options(sync_parser)
     sync_parser.add_argument(
@@ -454,6 +465,15 @@ def _add_audio_options(parser: argparse.ArgumentParser) -> None:
     _add_speech_normalize_options(parser)
 
 
+def _add_issue_audiobook_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--audiobook",
+        action="store_true",
+        default=False,
+        help="Package each full magazine issue as one chapterized .m4b audiobook with cover art.",
+    )
+
+
 def _add_speech_normalize_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--speech-normalize",
@@ -552,6 +572,10 @@ def _audio_options(args: argparse.Namespace, config: AppConfig) -> AudioOptions:
             config.audio_stall_timeout if raw_stall_timeout is None else raw_stall_timeout
         ),
     )
+
+
+def _audiobook_requested(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "audiobook", False))
 
 
 def _speech_normalize_options(
@@ -1250,6 +1274,241 @@ def _existing_article_dir(manifest: dict[str, str], article_url: str) -> Path | 
     return None
 
 
+def _resolved_issue_article_dirs(
+    issue: Issue,
+    *,
+    output_dir: Path,
+    planned_dirs: dict[str, Path],
+) -> list[Path]:
+    manifest = read_manifest(output_dir)
+    resolved_dirs: list[Path] = []
+    for article in issue.articles:
+        resolved_dir = _existing_article_dir(manifest, article.url)
+        if resolved_dir is not None:
+            resolved_dirs.append(resolved_dir)
+            continue
+        planned_dir = _planned_article_dir(planned_dirs, article.url)
+        if planned_dir is None:
+            raise ValueError(f"Missing planned directory for issue article: {article.url}")
+        resolved_dirs.append(planned_dir)
+    return resolved_dirs
+
+
+def _issue_cover_path(issue_dir: Path, issue: Issue) -> Path | None:
+    if not issue.cover_image_url:
+        return None
+    suffix = Path(issue.cover_image_url.split("?", 1)[0]).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        suffix = ".jpg"
+    return issue_dir / f"cover{suffix}"
+
+
+def _ensure_issue_cover(
+    client: WebClient,
+    issue: Issue,
+    *,
+    issue_dir: Path,
+    force: bool,
+) -> Path | None:
+    target_path = _issue_cover_path(issue_dir, issue)
+    if target_path is None:
+        return None
+    if target_path.exists() and not force:
+        return target_path
+    cover_image_url = issue.cover_image_url
+    if cover_image_url is None:
+        return None
+    data = client.download_binary(cover_image_url)
+    issue_dir.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(data)
+    return target_path
+
+
+def _issue_summary(issue: Issue) -> str | None:
+    summary = issue.summary
+    if summary:
+        return summary
+    month, title, synopsis = _issue_summary_parts(issue.title)
+    del month, title
+    return synopsis
+
+
+def _issue_release_date(issue: Issue) -> str | None:
+    dates = [
+        date
+        for article in issue.articles
+        if (date := article.published_date or article_date_from_url(article.url)) is not None
+    ]
+    if not dates:
+        return None
+    return min(dates)
+
+
+def _write_issue_sidecar(
+    issue: Issue,
+    *,
+    issue_dir: Path,
+    article_dirs: list[Path],
+    cover_image_path: Path | None,
+) -> Path:
+    article_sidecars = [_article_sidecar_metadata(article_dir) for article_dir in article_dirs]
+    contributors = _issue_contributors(article_sidecars)
+    relative_article_dirs = [
+        str(article_dir.relative_to(issue_dir))
+        if article_dir.is_relative_to(issue_dir)
+        else str(article_dir)
+        for article_dir in article_dirs
+    ]
+    payload: dict[str, object] = {
+        "title": issue.title,
+        "url": issue.url,
+        "published_month": issue.published_month,
+        "published_date": _issue_release_date(issue),
+        "summary": _issue_summary(issue),
+        "cover_image_url": issue.cover_image_url,
+        "cover_image_path": str(cover_image_path.relative_to(issue_dir))
+        if cover_image_path is not None and cover_image_path.is_relative_to(issue_dir)
+        else (str(cover_image_path) if cover_image_path is not None else None),
+        "publisher": "Rivista Domino",
+        "contributors": contributors,
+        "articles": [
+            {
+                "title": article.title,
+                "url": article.url,
+                "section": article.group or "Articoli",
+                "order": article.order,
+                "published_date": article.published_date,
+                "author": _article_author(article_sidecars, index),
+                "article_dir": relative_article_dirs[index]
+                if index < len(relative_article_dirs)
+                else None,
+            }
+            for index, article in enumerate(issue.articles)
+        ],
+    }
+    return write_issue_metadata(issue_dir, payload)
+
+
+def _build_issue_audiobook(
+    plan: IssueBundlePlan,
+    *,
+    output_dir: Path,
+    cover_image_path: Path | None,
+) -> Path:
+    audiobook_dir = output_dir / "audiobooks"
+    output_path = audiobook_dir / f"{plan.issue_dir.name}.m4b"
+    article_sidecars = [_article_sidecar_metadata(article_dir) for article_dir in plan.article_dirs]
+    contributors = _issue_contributors(article_sidecars)
+    chapters = [
+        AudiobookChapter(
+            title=_chapter_label(article.title, _article_author(article_sidecars, index)),
+            audio_path=_resolve_issue_audio_path(
+                article,
+                article_dir,
+                output_dir=output_dir,
+                audio_format="m4a",
+            ),
+            contributor=_article_author(article_sidecars, index),
+        )
+        for index, (article, article_dir) in enumerate(
+            zip(plan.issue.articles, plan.article_dirs, strict=True)
+        )
+    ]
+    metadata_title = plan.issue.title
+    metadata: dict[str, str] = {
+        "title": metadata_title,
+        "album": metadata_title,
+        "artist": "Rivista Domino",
+        "album_artist": "Rivista Domino",
+        "publisher": "Rivista Domino",
+        "genre": "Magazine",
+        "comment": plan.issue.url,
+    }
+    if contributors:
+        joined_contributors = ", ".join(contributors)
+        metadata["composer"] = joined_contributors
+        metadata["contributors"] = joined_contributors
+    release_date = _issue_release_date(plan.issue)
+    if release_date:
+        metadata["date"] = release_date
+    summary = _issue_summary(plan.issue)
+    if summary:
+        metadata["description"] = summary
+        metadata["synopsis"] = summary
+    return build_m4b(
+        output_path,
+        title=metadata_title,
+        chapters=chapters,
+        cover_image_path=cover_image_path,
+        metadata=metadata,
+    )
+
+
+def _article_sidecar_metadata(article_dir: Path) -> dict[str, object]:
+    metadata_path = article_dir / "metadata.json"
+    if not metadata_path.exists():
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): value for key, value in payload.items()}
+
+
+def _article_author(article_sidecars: list[dict[str, object]], index: int) -> str | None:
+    if index >= len(article_sidecars):
+        return None
+    raw_author = article_sidecars[index].get("author")
+    if not isinstance(raw_author, str):
+        return None
+    author = raw_author.strip()
+    return author or None
+
+
+def _issue_contributors(article_sidecars: list[dict[str, object]]) -> list[str]:
+    contributors: list[str] = []
+    for index in range(len(article_sidecars)):
+        author = _article_author(article_sidecars, index)
+        if author and author not in contributors:
+            contributors.append(author)
+    return contributors
+
+
+def _chapter_label(title: str, author: str | None) -> str:
+    if not author:
+        return title
+    return f"{title} (di {author})"
+
+
+def _resolve_issue_audio_path(
+    article: Link,
+    article_dir: Path,
+    *,
+    output_dir: Path,
+    audio_format: str,
+) -> Path:
+    expected_path = _audio_output_path(
+        article_dir,
+        output_dir=output_dir,
+        audio_format=audio_format,
+    )
+    if expected_path.exists():
+        return expected_path
+    order = article.order or 0
+    if order <= 0:
+        raise AudiobookError(f"Missing chapter audio file: {expected_path}")
+    order_matches = sorted(expected_path.parent.glob(f"{order:02d}-*.{audio_format}"))
+    if len(order_matches) == 1:
+        return order_matches[0]
+    article_slug = slugify(article.title, fallback="articolo")
+    slug_matches = [path for path in order_matches if article_slug in path.stem]
+    if len(slug_matches) == 1:
+        return slug_matches[0]
+    raise AudiobookError(f"Missing chapter audio file: {expected_path}")
+
+
 def article_dir_for_index(output_dir: Path, article: Article, *, index: int) -> Path:
     return output_dir / f"{index:03d}-{slugify(article.title)}"
 
@@ -1493,6 +1752,7 @@ def _download_issue_articles(
     config: AppConfig,
     output_dir: Path,
     create_audio: bool,
+    create_audiobook: bool,
     audio_format: str,
     audio_timeout: float,
     audio_chunked: bool = True,
@@ -1538,7 +1798,7 @@ def _download_issue_articles(
             "published_date": article_link.published_date,
         }
 
-    return _download_articles(
+    result = _download_articles(
         article_urls,
         config,
         output_dir,
@@ -1557,6 +1817,31 @@ def _download_issue_articles(
         target_dirs=target_dirs,
         metadata_by_url=metadata_by_url,
     )
+    resolved_article_dirs = _resolved_issue_article_dirs(
+        issue,
+        output_dir=output_dir,
+        planned_dirs=target_dirs,
+    )
+    cover_image_path = _ensure_issue_cover(client, issue, issue_dir=issue_dir, force=force)
+    _write_issue_sidecar(
+        issue,
+        issue_dir=issue_dir,
+        article_dirs=resolved_article_dirs,
+        cover_image_path=cover_image_path,
+    )
+    if result != 0 or not create_audiobook:
+        return result
+    with _progress_step(f"Packaging audiobook {issue_dir.name}.m4b"):
+        _build_issue_audiobook(
+            IssueBundlePlan(
+                issue=issue,
+                issue_dir=issue_dir,
+                article_dirs=resolved_article_dirs,
+            ),
+            output_dir=output_dir,
+            cover_image_path=cover_image_path,
+        )
+    return result
 
 
 def _resolve_article_selector(articles: list[Link], selector: str) -> Link:
@@ -1686,6 +1971,7 @@ def _handle_sync(
     config: AppConfig,
     *,
     create_audio: bool,
+    create_audiobook: bool,
     audio_format: str,
     audio_timeout: float,
     audio_chunked: bool = True,
@@ -1704,6 +1990,7 @@ def _handle_sync(
     manifest = read_manifest(output_dir)
     downloaded_dirs: list[Path] = []
     audio_dirs: list[Path] = []
+    issue_bundle_plans: list[IssueBundlePlan] = []
     selected_count = 0
 
     for issue in issues:
@@ -1711,6 +1998,7 @@ def _handle_sync(
         issue_dir = output_dir / _issue_folder_name(
             issue_detail.title, issue_detail.published_month
         )
+        issue_article_dirs: list[Path] = []
         print(f"issue: {issue_detail.title}")
         group_indexes = _group_indexes(issue_detail.articles)
         for article_link in issue_detail.articles:
@@ -1721,6 +2009,7 @@ def _handle_sync(
                 if create_audio:
                     audio_dirs.append(existing_dir)
                     selected_count += 1
+                issue_article_dirs.append(existing_dir)
                 continue
             article = client.download_article(article_link.url)
             article = replace(article, issue_title=issue_detail.title)
@@ -1754,12 +2043,47 @@ def _handle_sync(
                 )
             manifest[article.url] = str(target_dir)
             downloaded_dirs.append(target_dir)
+            issue_article_dirs.append(target_dir)
             selected_count += 1
             if create_audio:
                 audio_dirs.append(target_dir)
             print(f"  downloaded: {article.title}")
         if max_articles is not None and selected_count >= max_articles:
+            cover_image_path = _ensure_issue_cover(
+                client, issue_detail, issue_dir=issue_dir, force=force
+            )
+            _write_issue_sidecar(
+                issue_detail,
+                issue_dir=issue_dir,
+                article_dirs=issue_article_dirs,
+                cover_image_path=cover_image_path,
+            )
+            if create_audiobook and len(issue_article_dirs) == len(issue_detail.articles):
+                issue_bundle_plans.append(
+                    IssueBundlePlan(
+                        issue=issue_detail,
+                        issue_dir=issue_dir,
+                        article_dirs=issue_article_dirs,
+                    )
+                )
             break
+        cover_image_path = _ensure_issue_cover(
+            client, issue_detail, issue_dir=issue_dir, force=force
+        )
+        _write_issue_sidecar(
+            issue_detail,
+            issue_dir=issue_dir,
+            article_dirs=issue_article_dirs,
+            cover_image_path=cover_image_path,
+        )
+        if create_audiobook and len(issue_article_dirs) == len(issue_detail.articles):
+            issue_bundle_plans.append(
+                IssueBundlePlan(
+                    issue=issue_detail,
+                    issue_dir=issue_dir,
+                    article_dirs=issue_article_dirs,
+                )
+            )
 
     write_manifest(output_dir, manifest)
     audio_result = 0
@@ -1778,6 +2102,17 @@ def _handle_sync(
             speech_options=speech_options,
             force=force,
         )
+    if create_audiobook and audio_result == 0:
+        for plan in issue_bundle_plans:
+            cover_image_path = _issue_cover_path(plan.issue_dir, plan.issue)
+            with _progress_step(f"Packaging audiobook {plan.issue_dir.name}.m4b"):
+                _build_issue_audiobook(
+                    plan,
+                    output_dir=output_dir,
+                    cover_image_path=cover_image_path
+                    if cover_image_path and cover_image_path.exists()
+                    else None,
+                )
     print(f"new_articles: {len(downloaded_dirs)}")
     return audio_result
 
@@ -2040,6 +2375,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "download":
             output_dir = args.output_dir or config.output_dir
             audio_options = _audio_options(args, config)
+            create_audiobook = _audiobook_requested(args)
+            if create_audiobook:
+                audio_options = replace(audio_options, create=True)
+                if audio_options.audio_format != "m4a":
+                    raise ValueError("Issue audiobook packaging requires --audio-format m4a.")
             speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
             if args.all:
@@ -2054,6 +2394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config=config,
                     output_dir=output_dir,
                     create_audio=audio_options.create,
+                    create_audiobook=create_audiobook,
                     audio_format=audio_options.audio_format,
                     audio_timeout=audio_options.timeout,
                     audio_chunked=audio_options.chunked,
@@ -2107,11 +2448,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.command in {"sync-magazine", "sync"}:
             audio_options = _audio_options(args, config)
+            create_audiobook = _audiobook_requested(args)
+            if create_audiobook:
+                audio_options = replace(audio_options, create=True)
+                if audio_options.audio_format != "m4a":
+                    raise ValueError("Issue audiobook packaging requires --audio-format m4a.")
             speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
             return _handle_sync(
                 config,
                 create_audio=audio_options.create,
+                create_audiobook=create_audiobook,
                 audio_format=audio_options.audio_format,
                 audio_timeout=audio_options.timeout,
                 audio_chunked=audio_options.chunked,

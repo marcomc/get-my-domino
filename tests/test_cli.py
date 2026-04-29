@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import requests
@@ -17,7 +18,7 @@ from get_my_domino import __version__, cli, speech_normalize
 from get_my_domino import audio as audio_module
 from get_my_domino.config import AppConfig, load_config
 from get_my_domino.extract import extract_article, extract_links
-from get_my_domino.models import Article, Link
+from get_my_domino.models import Article, Issue, Link
 from get_my_domino.session_store import load_cookies, save_cookies
 from get_my_domino.storage import article_text_document, write_article, write_manifest
 from get_my_domino.web import WebClient
@@ -476,9 +477,10 @@ def test_issue_articles_keep_month_groups_dates_and_order(tmp_path: Path) -> Non
         {
             issue_url: """
             <article class="product">
+              <meta property="og:image" content="https://cdn.example.test/guaio.jpg" />
               <div class="summary">
                 <h1 class="product_title">Guaio persiano</h1>
-                <p>4/2026 Guaio persiano</p>
+                <p>4/2026 Guaio persiano La crisi spiegata</p>
               </div>
               <div id="tab-articles">
                 <h3>L'Editoriale</h3>
@@ -500,6 +502,8 @@ def test_issue_articles_keep_month_groups_dates_and_order(tmp_path: Path) -> Non
 
     assert issue.title == "Guaio persiano"
     assert issue.published_month == "2026-04"
+    assert issue.cover_image_url == "https://cdn.example.test/guaio.jpg"
+    assert issue.summary == "4/2026 La crisi spiegata"
     assert [
         (link.title, link.group, link.published_date, link.order) for link in issue.articles
     ] == [
@@ -791,6 +795,7 @@ def test_download_issue_all_downloads_every_article(
         config=config,
         output_dir=config.output_dir,
         create_audio=False,
+        create_audiobook=False,
         audio_format="m4a",
         audio_timeout=900.0,
         export_formats=("html", "txt"),
@@ -817,6 +822,223 @@ def test_download_issue_all_downloads_every_article(
         / "02-analisi"
         / "02-analisi.html"
     ).exists()
+
+
+def test_download_issue_all_can_package_issue_audiobook(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
+    first_article = "https://www.rivistadomino.it/blog/2026/04/21/editoriale"
+    second_article = "https://www.rivistadomino.it/blog/2026/04/21/analisi"
+    cover_url = "https://cdn.example.test/guaio.jpg"
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">4/2026 Guaio persiano</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/guaio-persiano?sfoglia=1": f"""
+            <article class="product">
+              <meta property="og:image" content="{cover_url}" />
+              <div class="summary">
+                <h1 class="product_title">Guaio persiano</h1>
+                <p>4/2026 Guaio persiano La crisi spiegata</p>
+              </div>
+              <div id="tab-articles">
+                <h3>L'Editoriale</h3>
+                <a class="article_title" href="{first_article}">Editoriale</a>
+                <h3>Analisi</h3>
+                <a class="article_title" href="{second_article}">Analisi</a>
+              </div>
+            </article>
+            """,
+            first_article: (
+                "<article><h1>Editoriale</h1><p class='byline'>di Dario Fabbri</p>"
+                "<p>Corpo 1.</p></article>"
+            ),
+            second_article: (
+                "<article><h1>Analisi</h1><p class='byline'>di Federico Petroni</p>"
+                "<p>Corpo 2.</p></article>"
+            ),
+            cover_url: "jpeg-bytes",
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    packaged: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    def fake_ensure_audio_for_download(
+        raw_path: Path,
+        *,
+        output_dir: Path,
+        audio_format: str,
+        **kwargs: object,
+    ) -> str:
+        del kwargs
+        audio_path = cli._audio_output_path(
+            raw_path,
+            output_dir=output_dir,
+            audio_format=audio_format,
+        )
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"audio")
+        return "generated"
+
+    monkeypatch.setattr(cli, "_ensure_audio_for_download", fake_ensure_audio_for_download)
+
+    def fake_build_m4b(
+        output_path: Path,
+        *,
+        title: str,
+        chapters: list[object],
+        cover_image_path: Path | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Path:
+        packaged.append(
+            {
+                "output_path": output_path,
+                "title": title,
+                "chapters": chapters,
+                "cover_image_path": cover_image_path,
+                "metadata": metadata,
+            }
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("book", encoding="utf-8")
+        return output_path
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    result = cli._download_issue_articles(
+        issue_selector="2026-04",
+        config=config,
+        output_dir=config.output_dir,
+        create_audio=True,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+    )
+
+    assert result == 0
+    assert len(packaged) == 1
+    assert packaged[0]["title"] == "Guaio persiano"
+    assert packaged[0]["cover_image_path"] == (
+        tmp_path / "exports" / "2026-04-guaio-persiano" / "cover.jpg"
+    )
+    assert packaged[0]["chapters"][0].title == "Editoriale (di Dario Fabbri)"
+    assert packaged[0]["chapters"][0].contributor == "Dario Fabbri"
+    metadata = packaged[0]["metadata"]
+    assert metadata is not None
+    assert metadata["date"] == "2026-04-21"
+    assert metadata["publisher"] == "Rivista Domino"
+    assert metadata["composer"] == "Dario Fabbri, Federico Petroni"
+    assert metadata["contributors"] == "Dario Fabbri, Federico Petroni"
+    assert metadata["description"] == "4/2026 La crisi spiegata"
+    issue_json = tmp_path / "exports" / "2026-04-guaio-persiano" / "issue.json"
+    payload = json.loads(issue_json.read_text(encoding="utf-8"))
+    assert payload["cover_image_path"] == "cover.jpg"
+    assert payload["contributors"] == ["Dario Fabbri", "Federico Petroni"]
+    assert payload["articles"][0]["author"] == "Dario Fabbri"
+    assert payload["published_date"] == "2026-04-21"
+
+
+def test_issue_audiobook_falls_back_to_legacy_audio_names(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    issue_dir = output_dir / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-l-editoriale" / "01-editoriale"
+    legacy_audio = output_dir / "audio" / "2026-04-guaio-persiano" / "01-2026-04-21-editoriale.m4a"
+    article_dir.mkdir(parents=True)
+    legacy_audio.parent.mkdir(parents=True)
+    legacy_audio.write_bytes(b"audio")
+    packaged: list[dict[str, Any]] = []
+
+    def fake_build_m4b(
+        output_path: Path,
+        *,
+        title: str,
+        chapters: list[object],
+        cover_image_path: Path | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Path:
+        del title, cover_image_path, metadata
+        packaged.append({"output_path": output_path, "chapters": chapters})
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("book", encoding="utf-8")
+        return output_path
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    cli._build_issue_audiobook(
+        cli.IssueBundlePlan(
+            issue=Issue(
+                title="Guaio persiano",
+                url="https://example.test/issue",
+                published_month="2026-04",
+                articles=[
+                    Link(
+                        title="Editoriale",
+                        url="https://example.test/article",
+                        order=1,
+                    )
+                ],
+            ),
+            issue_dir=issue_dir,
+            article_dirs=[article_dir],
+        ),
+        output_dir=output_dir,
+        cover_image_path=None,
+    )
+
+    assert packaged[0]["chapters"][0].audio_path == legacy_audio
+
+
+def test_resolved_issue_article_dirs_prefers_manifest_paths_for_legacy_issue_tree(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "exports"
+    legacy_dir = (
+        output_dir
+        / "2026-04-guaio-persiano"
+        / "01-l-editoriale"
+        / "01-2026-04-21-cosa-fare-a-teheran-quando-sei-morto"
+    )
+    legacy_dir.mkdir(parents=True)
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        published_month="2026-04",
+        articles=[
+            Link(
+                title="Cosa fare a Teheran quando sei morto",
+                url="https://example.test/article",
+                order=1,
+            )
+        ],
+    )
+    write_manifest(output_dir, {issue.articles[0].url: str(legacy_dir)})
+
+    resolved = cli._resolved_issue_article_dirs(
+        issue,
+        output_dir=output_dir,
+        planned_dirs={
+            issue.articles[0].url: (
+                output_dir
+                / "2026-04-guaio-persiano"
+                / "01-l-editoriale"
+                / "01-cosa-fare-a-teheran-quando-sei-morto"
+            )
+        },
+    )
+
+    assert resolved == [legacy_dir]
 
 
 def test_download_issue_all_rejects_ambiguous_selectors(capsys: CaptureFixture[str]) -> None:

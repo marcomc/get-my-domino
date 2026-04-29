@@ -30,6 +30,10 @@ audio_stall_timeout = 45
 speech_normalize_auto = false
 speech_normalize_agent = "codex"
 speech_normalize_command = "codex"
+# Leave empty to use the Codex CLI default model, or set an explicit model
+# name such as "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", or, if
+# your account has access, the lower-cost ultra-fast
+# "gpt-5.3-codex-spark" research preview.
 speech_normalize_model = ""
 speech_normalize_timeout = 900
 speech_normalize_force = false

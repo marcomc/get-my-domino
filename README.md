@@ -34,11 +34,17 @@ local `.m4a` or `.mp3` audio files with the macOS `say` voice engine.
   does not read them aloud
 - Incremental `sync-magazine` and `sync-feed` commands with local manifests
 - Optional `.m4a` or `.mp3` synthesis through macOS `say` and `afconvert`
+- Optional full-issue `.m4b` audiobook packaging with chapter markers, embedded
+  cover art, and issue metadata when downloading or syncing magazine issues
+- Issue sidecars as `issue.json` with title, issue URL, release date, summary,
+  cover paths, section/order data, and article-folder mapping
 - Default config file at `~/.config/get-my-domino/config.toml`
 - Saved authenticated sessions at `~/.config/get-my-domino/session.json`
 - Separate sync flow for `La settimana di Domino`
 - `uv`-driven sync, lint, test, and install flows
 - `ruff`, `mypy`, `pytest`, `markdownlint`, and `shellcheck` wired in
+- Maintainer notes for the current Domino site structure and parser touchpoints
+  under `docs/`
 
 ## Requirements
 
@@ -50,6 +56,7 @@ For users:
 - Playwright only when using browser-assisted login
 - macOS `say` and `afconvert` only when generating audio
 - `ffmpeg` only when generating `.mp3` audio
+- `ffmpeg` and `ffprobe` when packaging issue audiobooks as `.m4b`
 
 For maintainers:
 
@@ -239,6 +246,36 @@ database/archive maintenance command: it walks all available magazine issues,
 uses the local manifest to skip articles already present, and adds only new
 articles. `sync-feed` does the same for `La settimana di Domino`.
 
+When you add `--audiobook` to `download --issue YYYY-MM --all` or to
+`sync-magazine`, the CLI also packages each complete magazine issue as one
+chapterized `.m4b` file under `output_dir/audiobooks/`. The package reuses the
+ordered per-article `.m4a` files as audiobook chapters, embeds the issue cover
+image when available, and writes issue-level metadata sidecars as
+`<issue-folder>/issue.json`.
+
+Verified audiobook metadata written into the `.m4b` container:
+
+- `title`
+- `album`
+- `artist`
+- `album_artist`
+- `composer` with the unique issue-level contributor list
+- `date`
+- `genre`
+- `comment` using the issue URL
+- `description`
+- `synopsis`
+- chapter titles from the issue article order, expanded to `Title (di Author)`
+  when article author metadata is available
+- embedded cover art as an attached picture stream
+
+The bundler is backward-compatible with existing archives that already contain
+older issue audio filenames, as long as the chapter files still preserve their
+article order prefix such as `01-`, `02-`, and so on.
+
+Issue sidecars also keep contributor metadata per article and as a deduplicated
+issue-level contributor list under `contributors`.
+
 Download specific articles:
 
 ```bash
@@ -416,6 +453,76 @@ The default prompt is installed as a user-editable file at
 different prompt template. The template must keep the placeholders
 `{output_path}`, `{source_text_path}`, and `{normalized_text}`.
 
+Model selection for Codex speech normalization already works at all three
+layers:
+
+- config file with `speech_normalize_model = "gpt-5.3-codex-spark"`
+- command line with `--speech-normalize-model gpt-5.3-codex-spark`
+- direct Codex invocation, because the CLI passes `-m <model>` through to
+  `codex exec`
+
+Examples:
+
+```bash
+get-my-domino speak /path/to/article-dir \
+  --speech-normalize \
+  --speech-normalize-model gpt-5.3-codex-spark
+
+get-my-domino sync-magazine \
+  --audio \
+  --speech-normalize \
+  --speech-normalize-model gpt-5.3-codex-spark
+```
+
+If you want Spark as your default for speech normalization, set:
+
+```toml
+speech_normalize_model = "gpt-5.3-codex-spark"
+```
+
+Current OpenAI model availability for this setting, verified against official
+OpenAI docs on April 29, 2026:
+
+- Recommended default here, when your account has access:
+  `gpt-5.3-codex-spark`
+- General Codex model examples documented by OpenAI today:
+  `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`,
+  `gpt-5.3-codex-spark`
+- General API model IDs documented by OpenAI today:
+  `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`,
+  `gpt-5.4-nano`, `gpt-5.3-codex`
+
+OpenAI currently documents the following plan-level availability:
+
+- ChatGPT subscriptions:
+  all users have GPT-5.3 by default; GPT-5.5 is rolling out in ChatGPT to
+  Plus, Pro, Business, and Enterprise; GPT-5.5 Pro is for Pro, Business, and
+  Enterprise; GPT-5.4 Thinking remains the earlier paid-tier reasoning model;
+  GPT-5.4 mini is available to Free and Go users through Thinking and as a
+  fallback for paid GPT-5.4 Thinking users
+- Codex subscriptions:
+  GPT-5.5 is available in Codex for Plus, Pro, Business, Enterprise, Edu, and
+  Go plans; the Codex rate card also currently lists GPT-5.4, GPT-5.4-Mini,
+  GPT-5.3-Codex, and GPT-5.3-Codex-Spark as a research preview
+- API:
+  the current primary GPT family listed by OpenAI is GPT-5.5, GPT-5.5 Pro,
+  GPT-5.4, GPT-5.4 Pro, GPT-5.4 mini, GPT-5.4 nano, plus GPT-5.3-Codex for
+  coding workflows
+
+Important availability note: `gpt-5.3-codex-spark` launched on February 12,
+2026 as a research preview in Codex for ChatGPT Pro users, and OpenAI’s Codex
+rate card still describes it as a research preview with non-final credit rates.
+OpenAI also says Codex-Spark is in the API only for a small set of design
+partners, so you should not assume general API access to Spark.
+
+For `get-my-domino`, the practical rule is:
+
+- if you want the cheapest Codex option and your Codex account exposes it, set
+  `speech_normalize_model = "gpt-5.3-codex-spark"`
+- if Spark is not available on your account, fall back to
+  `gpt-5.4-mini` or `gpt-5.3-codex` depending on whether you prefer lower cost
+  or stronger coding-oriented behavior
+
 Speech normalization config:
 
 | Key | Meaning |
@@ -516,6 +623,12 @@ make test
 make lint
 make run
 ```
+
+When the Domino site layout changes, start with the maintainer note at
+[docs/domino-site-structure.md](/Users/mmassari/Development/get-my-domino/docs/domino-site-structure.md).
+It documents the current crawl entry points, issue/feed selectors, article
+extraction assumptions, and which config keys usually let you patch the scraper
+without changing code.
 
 ## Release Notes
 
