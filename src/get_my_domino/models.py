@@ -10,6 +10,7 @@ class Link:
     title: str
     url: str
     group: str | None = None
+    author: str | None = None
     published_date: str | None = None
     order: int | None = None
 

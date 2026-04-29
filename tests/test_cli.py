@@ -16,11 +16,17 @@ from requests.cookies import RequestsCookieJar
 
 from get_my_domino import __version__, cli, speech_normalize
 from get_my_domino import audio as audio_module
+from get_my_domino.audiobook_naming import AudiobookFilenameSettings
 from get_my_domino.config import AppConfig, load_config
 from get_my_domino.extract import extract_article, extract_links
 from get_my_domino.models import Article, Issue, Link
 from get_my_domino.session_store import load_cookies, save_cookies
-from get_my_domino.storage import article_text_document, write_article, write_manifest
+from get_my_domino.storage import (
+    article_text_document,
+    read_manifest,
+    write_article,
+    write_manifest,
+)
 from get_my_domino.web import WebClient
 
 
@@ -240,6 +246,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
         "\n".join(
             [
                 "audio_auto = true",
+                "audiobook_auto = true",
                 'audio_format = "mp4a"',
                 "audio_timeout = 123",
                 "audio_chunked = false",
@@ -265,6 +272,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
     config = load_config(config_path)
 
     assert config.audio_auto is True
+    assert config.audiobook_auto is True
     assert config.audio_format == "m4a"
     assert config.audio_timeout == 123.0
     assert config.audio_chunked is False
@@ -281,6 +289,69 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
     assert config.speech_normalize_fallback is True
     assert config.speech_normalize_prompt_path == Path.home() / "custom-prompt.md"
     assert config.siri_voice == "Siri Voice 2"
+
+
+def test_config_reads_preferred_audiobook_naming_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'magazine_title = "Rivista Domino"',
+                'filename_separator = "."',
+                'audiobook_name_format = "{magazine}{sep}{year}{sep}{month}{sep}{title_slug}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.magazine_title == "Rivista Domino"
+    assert config.filename_separator == "."
+    assert config.audiobook_name_format == "{magazine}{sep}{year}{sep}{month}{sep}{title_slug}"
+
+
+def test_config_derives_default_output_dir_from_collection_dir_name(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_parent_dir = "{tmp_path}"',
+                'magazine_title = "Rivista Domino"',
+                'collection_dir_name = "rivista_domino"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.output_parent_dir == tmp_path
+    assert config.collection_dir_name == "rivista_domino"
+    assert config.output_dir == tmp_path / "rivista_domino"
+
+
+def test_config_reads_legacy_audiobook_naming_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'audiobook_filename_magazine_title = "Rivista Domino"',
+                'audiobook_filename_separator = "_"',
+                'audiobook_filename_format = "{magazine_slug}{sep}{issue}{sep}{title_slug}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.magazine_title == "Rivista Domino"
+    assert config.filename_separator == "_"
+    assert config.audiobook_name_format == "{magazine_slug}{sep}{issue}{sep}{title_slug}"
 
 
 def test_config_rejects_unknown_audio_format(tmp_path: Path) -> None:
@@ -734,7 +805,7 @@ def test_download_resolves_issue_article_selector(
         issue_selector="2026-04",
         article_selector="1",
         config=config,
-        output_dir=config.output_dir,
+        root_output_dir=config.output_dir,
         create_audio=False,
         audio_format="m4a",
         audio_timeout=900.0,
@@ -756,6 +827,8 @@ def test_download_resolves_issue_article_selector(
     assert (
         tmp_path
         / "exports"
+        / "library"
+        / "rivista"
         / "2026-04-guaio-persiano"
         / "01-l-editoriale"
         / "01-editoriale"
@@ -803,7 +876,7 @@ def test_download_issue_all_downloads_every_article(
     result = cli._download_issue_articles(
         issue_selector="2026-04",
         config=config,
-        output_dir=config.output_dir,
+        root_output_dir=config.output_dir,
         create_audio=False,
         create_audiobook=False,
         audio_format="m4a",
@@ -819,6 +892,8 @@ def test_download_issue_all_downloads_every_article(
     assert (
         tmp_path
         / "exports"
+        / "library"
+        / "rivista"
         / "2026-04-guaio-persiano"
         / "01-l-editoriale"
         / "01-editoriale"
@@ -827,6 +902,8 @@ def test_download_issue_all_downloads_every_article(
     assert (
         tmp_path
         / "exports"
+        / "library"
+        / "rivista"
         / "2026-04-guaio-persiano"
         / "02-analisi"
         / "02-analisi"
@@ -927,7 +1004,7 @@ def test_download_issue_all_can_package_issue_audiobook(
     result = cli._download_issue_articles(
         issue_selector="2026-04",
         config=config,
-        output_dir=config.output_dir,
+        root_output_dir=config.output_dir,
         create_audio=True,
         create_audiobook=True,
         audio_format="m4a",
@@ -939,7 +1016,7 @@ def test_download_issue_all_can_package_issue_audiobook(
     assert len(packaged) == 1
     assert packaged[0]["title"] == "Guaio persiano"
     assert packaged[0]["cover_image_path"] == (
-        tmp_path / "exports" / "2026-04-guaio-persiano" / "cover.jpg"
+        tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano" / "cover.jpg"
     )
     assert packaged[0]["chapters"][0].title == "Editoriale (di Dario Fabbri)"
     assert packaged[0]["chapters"][0].contributor == "Dario Fabbri"
@@ -952,7 +1029,9 @@ def test_download_issue_all_can_package_issue_audiobook(
     assert metadata["composer"] == "Dario Fabbri, Federico Petroni"
     assert metadata["contributors"] == "Dario Fabbri, Federico Petroni"
     assert metadata["description"] == "4/2026 La crisi spiegata"
-    issue_json = tmp_path / "exports" / "2026-04-guaio-persiano" / "issue.json"
+    issue_json = (
+        tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano" / "issue.json"
+    )
     payload = json.loads(issue_json.read_text(encoding="utf-8"))
     assert payload["cover_image_path"] == "cover.jpg"
     assert payload["contributors"] == ["Dario Fabbri", "Federico Petroni"]
@@ -964,7 +1043,7 @@ def test_issue_audiobook_falls_back_to_legacy_audio_names(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     output_dir = tmp_path / "exports"
-    issue_dir = output_dir / "2026-04-guaio-persiano"
+    issue_dir = output_dir / "library" / "rivista" / "2026-04-guaio-persiano"
     article_dir = issue_dir / "01-l-editoriale" / "01-editoriale"
     legacy_audio = output_dir / "audio" / "2026-04-guaio-persiano" / "01-2026-04-21-editoriale.m4a"
     article_dir.mkdir(parents=True)
@@ -1005,11 +1084,12 @@ def test_issue_audiobook_falls_back_to_legacy_audio_names(
             issue_dir=issue_dir,
             article_dirs=[article_dir],
         ),
-        output_dir=output_dir,
+        root_output_dir=output_dir,
         cover_image_path=None,
+        filename_settings=AudiobookFilenameSettings(),
     )
 
-    assert packaged[0]["chapters"][0].audio_path == legacy_audio
+    assert packaged[0]["chapters"][0].audio_path == article_dir / "01-editoriale.m4a"
 
 
 def test_refresh_issue_metadata_updates_article_and_issue_sidecars(
@@ -1017,10 +1097,10 @@ def test_refresh_issue_metadata_updates_article_and_issue_sidecars(
 ) -> None:
     issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
     article_url = "https://www.rivistadomino.it/blog/2026/04/21/e-la-casa-bianca-resto-sola"
-    issue_dir = tmp_path / "exports" / "2026-04-guaio-persiano"
-    article_dir = issue_dir / "02-la-guerra-va-male" / "02-2026-04-21-e-la-casa-bianca-rest-sola"
+    issue_dir = tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-la-guerra-va-male" / "01-e-la-casa-bianca-rest-sola"
     article_dir.mkdir(parents=True)
-    write_manifest(tmp_path / "exports", {article_url: str(article_dir)})
+    write_manifest(tmp_path / "exports" / "library" / "rivista", {article_url: str(article_dir)})
     session = FakeSession(
         {
             "https://www.rivistadomino.it/mio-account/my_domino/": f"""
@@ -1065,17 +1145,84 @@ def test_refresh_issue_metadata_updates_article_and_issue_sidecars(
 
     result = cli._handle_refresh_issue_metadata(
         config,
-        output_dir=config.output_dir,
+        root_output_dir=config.output_dir,
         all_issues=False,
         issue_selector="2026-04",
     )
 
     assert result == 0
-    metadata = json.loads((article_dir / "metadata.json").read_text(encoding="utf-8"))
+    manifest = read_manifest(tmp_path / "exports" / "library" / "rivista")
+    metadata_path = Path(manifest[article_url]) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["author"] == "Lorenzo Maria Ricci"
     issue_sidecar = json.loads((issue_dir / "issue.json").read_text(encoding="utf-8"))
     assert issue_sidecar["contributors"] == ["Lorenzo Maria Ricci"]
     assert issue_sidecar["articles"][0]["author"] == "Lorenzo Maria Ricci"
+    assert issue_sidecar["chapters"][0]["author"] == "Lorenzo Maria Ricci"
+    issue_metadata = json.loads((issue_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert issue_metadata["articles"][0]["author"] == "Lorenzo Maria Ricci"
+    assert issue_metadata["chapters"][0]["title"] == "E la Casa Bianca restò sola"
+
+
+def test_refresh_issue_metadata_falls_back_to_issue_index_author(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
+    article_url = "https://www.rivistadomino.it/blog/2026/04/21/e-la-casa-bianca-resto-sola"
+    issue_dir = tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "02-la-guerra-va-male" / "02-2026-04-21-e-la-casa-bianca-rest-sola"
+    article_dir.mkdir(parents=True)
+    write_manifest(tmp_path / "exports" / "library" / "rivista", {article_url: str(article_dir)})
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">4/2026 Guaio persiano</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/guaio-persiano?sfoglia=1": f"""
+            <article class="product">
+              <div class="summary">
+                <h1 class="product_title">Guaio persiano</h1>
+              </div>
+              <div id="tab-articles">
+                <h3>La guerra va male</h3>
+                <a class="article_title" href="{article_url}">E la Casa Bianca restò sola</a>
+                <div class="article_byline">Lorenzo Maria Ricci</div>
+              </div>
+            </article>
+            """,
+            article_url: """
+            <html>
+              <body>
+                <article>
+                  <h1>E la Casa Bianca restò sola</h1>
+                  <p>Corpo.</p>
+                </article>
+              </body>
+            </html>
+            """,
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    result = cli._handle_refresh_issue_metadata(
+        config,
+        root_output_dir=config.output_dir,
+        all_issues=False,
+        issue_selector="2026-04",
+    )
+
+    assert result == 0
+    manifest = read_manifest(tmp_path / "exports" / "library" / "rivista")
+    metadata_path = Path(manifest[article_url]) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["author"] == "Lorenzo Maria Ricci"
 
 
 def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path) -> None:
@@ -1087,7 +1234,7 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
     )
     plan = cli.IssueBundlePlan(
         issue=issue,
-        issue_dir=tmp_path / "exports" / "2026-04-guaio-persiano",
+        issue_dir=tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano",
         article_dirs=[],
     )
     events: list[str] = []
@@ -1114,10 +1261,11 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
     def fake_build_issue_audiobook(
         packaged_plan: cli.IssueBundlePlan,
         *,
-        output_dir: Path,
+        root_output_dir: Path,
         cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
     ) -> Path:
-        del packaged_plan, output_dir, cover_image_path
+        del packaged_plan, root_output_dir, cover_image_path, filename_settings
         events.append("package")
         return tmp_path / "exports" / "audiobooks" / "2026-04-guaio-persiano.m4b"
 
@@ -1133,15 +1281,103 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
     try:
         result = cli._handle_repackage_audiobook(
             AppConfig(output_dir=tmp_path / "exports"),
-            output_dir=tmp_path / "exports",
+            root_output_dir=tmp_path / "exports",
             all_issues=False,
             issue_selector="2026-04",
+            filename_settings=AudiobookFilenameSettings(),
         )
     finally:
         monkeypatch.undo()
 
     assert result == 0
     assert events == ["refresh", "package"]
+
+
+def test_audiobook_output_path_uses_configurable_filename_template() -> None:
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        published_month="2026-04",
+        articles=[],
+    )
+
+    output_path = cli._audiobook_output_path(
+        Path("/tmp/audiobooks"),
+        issue,
+        settings=AudiobookFilenameSettings(
+            magazine_title="Rivista Domino",
+            separator="-",
+            format_template="{magazine_slug}{sep}anno-{year}{sep}numero-{month}{sep}{title_slug}",
+        ),
+    )
+
+    assert output_path.name == "rivista-domino-anno-2026-numero-04-guaio-persiano.m4b"
+
+
+def test_rename_audiobooks_uses_embedded_metadata(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    library_dir = tmp_path / "library"
+    library_dir.mkdir()
+    old_path = library_dir / "legacy-name.m4b"
+    old_path.write_bytes(b"book")
+
+    monkeypatch.setattr(
+        cli,
+        "read_audiobook_tags",
+        lambda path: {"title": "Guaio persiano", "date": "2026-04-21"} if path == old_path else {},
+    )
+
+    result = cli._handle_rename_audiobooks(
+        AppConfig(output_dir=tmp_path / "exports"),
+        paths=[],
+        library_dir=library_dir,
+        output_dir=tmp_path / "exports",
+        filename_settings=AudiobookFilenameSettings(
+            magazine_title="Domino",
+            separator="-",
+            format_template="{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}",
+        ),
+        dry_run=False,
+    )
+
+    assert result == 0
+    assert not old_path.exists()
+    assert (library_dir / "domino-2026-04-guaio-persiano.m4b").exists()
+
+
+def test_rename_audiobooks_allows_case_only_rename(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    library_dir = tmp_path / "library"
+    library_dir.mkdir()
+    old_path = library_dir / "domino-2026-03-assalto-all-iran.m4b"
+    old_path.write_bytes(b"book")
+
+    monkeypatch.setattr(
+        cli,
+        "read_audiobook_tags",
+        lambda path: (
+            {"title": "Assalto all Iran", "date": "2026-03-01"} if path == old_path else {}
+        ),
+    )
+
+    result = cli._handle_rename_audiobooks(
+        AppConfig(output_dir=tmp_path / "exports"),
+        paths=[old_path],
+        library_dir=None,
+        output_dir=tmp_path / "exports",
+        filename_settings=AudiobookFilenameSettings(
+            magazine_title="Domino",
+            separator="-",
+            format_template="{magazine}{sep}{year}{sep}{month}{sep}{title_slug}",
+        ),
+        dry_run=False,
+    )
+
+    assert result == 0
+    assert (library_dir / "Domino-2026-03-assalto-all-iran.m4b").exists()
+    names = sorted(path.name for path in library_dir.iterdir())
+    assert names == ["Domino-2026-03-assalto-all-iran.m4b"]
 
 
 def test_resolved_issue_article_dirs_prefers_manifest_paths_for_legacy_issue_tree(
@@ -1272,7 +1508,7 @@ def test_explicit_download_reuses_existing_manifest_dir_and_backfills_audio(
     assert audio_calls == [
         (
             existing_dir / "001-editoriale.txt",
-            tmp_path / "exports" / "audio" / "001-editoriale.m4a",
+            existing_dir / "001-editoriale.m4a",
         )
     ]
 
@@ -1343,7 +1579,7 @@ def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
     assert audio_calls == [
         (
             existing_dir / "001-editoriale.txt",
-            tmp_path / "exports" / "audio" / "001-editoriale.m4a",
+            existing_dir / "001-editoriale.m4a",
         )
     ]
 
@@ -1406,7 +1642,7 @@ def test_explicit_download_reuses_existing_audio_without_force(
     assert result == 0
     assert session.gets == []
     assert audio_calls == []
-    assert audio_path.read_text(encoding="utf-8") == "existing audio"
+    assert (existing_dir / "001-editoriale.m4a").read_text(encoding="utf-8") == "existing audio"
     assert "✓ 001-editoriale" in captured.out
     assert captured.out.count("reused") == 2
     assert "if this audio file is corrupt" not in captured.err
@@ -1468,8 +1704,9 @@ def test_explicit_download_force_regenerates_existing_audio(
     )
 
     assert result == 0
-    assert audio_calls == [(existing_dir / "001-editoriale.txt", audio_path)]
-    assert audio_path.read_text(encoding="utf-8") == "new audio"
+    expected_audio_call = (existing_dir / "001-editoriale.txt", existing_dir / "001-editoriale.m4a")
+    assert audio_calls == [expected_audio_call]
+    assert (existing_dir / "001-editoriale.m4a").read_text(encoding="utf-8") == "new audio"
 
 
 def test_explicit_download_force_rewrites_existing_export(
@@ -1765,6 +2002,19 @@ def test_extract_article_normalizes_domino_directed_by_author() -> None:
     assert article.author == "Dario Fabbri"
 
 
+def test_extract_article_removes_domino_site_suffix_from_title() -> None:
+    article = extract_article(
+        (
+            "<html><head><title>Dove Mosca regna - Rivista Domino</title></head>"
+            "<body><main><p>Corpo.</p></main></body></html>"
+        ),
+        page_url="https://example.test/articolo/",
+        content_selectors=("article", "main"),
+    )
+
+    assert article.title == "Dove Mosca regna"
+
+
 def test_article_text_document_omits_url_and_formats_spoken_header() -> None:
     article = Article(
         title="Cosa fare a Teheran quando sei morto - Rivista Domino",
@@ -1857,6 +2107,17 @@ def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
     )
     audiobook_no_audio_options = cli._audio_options(audiobook_no_audio_args, config)
     assert audiobook_no_audio_options.create is False
+
+
+def test_audiobook_request_defaults_to_config_and_allows_cli_override() -> None:
+    parser = cli.build_parser()
+    config = AppConfig(audiobook_auto=True)
+
+    sync_args = parser.parse_args(["sync-magazine"])
+    assert cli._audiobook_requested(sync_args, config) is True
+
+    explicit_args = parser.parse_args(["sync-magazine", "--audiobook"])
+    assert cli._audiobook_requested(explicit_args, AppConfig()) is True
 
     download_args = parser.parse_args(
         [
@@ -2206,7 +2467,14 @@ def test_speak_paths_uses_requested_audio_format(
 
     captured = capsys.readouterr()
     assert result == 0
-    audio_path = tmp_path / "exports" / "audio" / "2026-04-guaio-persiano" / "01-editoriale.mp3"
+    audio_path = (
+        tmp_path
+        / "exports"
+        / "2026-04-guaio-persiano"
+        / "01-l-editoriale"
+        / "01-editoriale"
+        / "01-editoriale.mp3"
+    )
     assert calls == [(text_path, audio_path, "Siri Voice 2", "mp3", 321.0)]
     assert str(audio_path) in captured.out
 
@@ -2328,7 +2596,7 @@ def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
 
     assert status == "generated"
     assert calls == [speech_text]
-    assert output == tmp_path / "exports" / "audio" / "001-editoriale.m4a"
+    assert output == article_dir / "001-editoriale.m4a"
 
 
 def test_codex_speech_normalizer_invokes_cli_without_printing_article(

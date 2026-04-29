@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import filecmp
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 from .extract import slugify
 from .models import Article
+
+_NORMALIZED_ARTIFACT_EXTENSIONS = ("html", "txt", "rtf", "m4a")
 
 
 def article_dir(output_dir: Path, article: Article, *, index: int) -> Path:
@@ -56,6 +59,7 @@ def write_article_export(
     metadata: dict[str, object] | None = None,
 ) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
+    normalize_article_artifacts(target_dir)
     _remove_legacy_export_files(target_dir)
     basename = article_basename(target_dir)
     article_text = article_text_document(article)
@@ -84,6 +88,7 @@ def write_article_metadata(
     metadata: dict[str, object] | None = None,
 ) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
+    normalize_article_artifacts(target_dir)
     (target_dir / "metadata.json").write_text(
         json.dumps(
             article_metadata(article, metadata=metadata),
@@ -139,10 +144,52 @@ def article_text_document(article: Article) -> str:
 
 
 def missing_article_export_files(target_dir: Path, *, export_formats: tuple[str, ...]) -> list[str]:
+    normalize_article_artifacts(target_dir)
     basename = article_basename(target_dir)
     expected = [f"{basename}.{extension}" for extension in export_formats]
     expected.append("metadata.json")
     return [name for name in expected if not (target_dir / name).exists()]
+
+
+def normalize_article_artifacts(target_dir: Path) -> None:
+    basename = article_basename(target_dir)
+    for extension in _NORMALIZED_ARTIFACT_EXTENSIONS:
+        _normalize_article_artifact(target_dir, basename=basename, extension=extension)
+
+
+def _normalize_article_artifact(target_dir: Path, *, basename: str, extension: str) -> None:
+    canonical_path = target_dir / f"{basename}.{extension}"
+    legacy_paths = _legacy_artifact_paths(
+        target_dir,
+        canonical_path=canonical_path,
+        extension=extension,
+    )
+    if not canonical_path.exists() and len(legacy_paths) == 1:
+        legacy_paths[0].rename(canonical_path)
+        legacy_paths = []
+    if not canonical_path.exists():
+        return
+    for legacy_path in legacy_paths:
+        if legacy_path.name == f"article.{extension}" or filecmp.cmp(
+            canonical_path,
+            legacy_path,
+            shallow=False,
+        ):
+            legacy_path.unlink(missing_ok=True)
+
+
+def _legacy_artifact_paths(
+    target_dir: Path,
+    *,
+    canonical_path: Path,
+    extension: str,
+) -> list[Path]:
+    paths: list[Path] = []
+    for candidate in sorted(target_dir.glob(f"*.{extension}")):
+        if candidate == canonical_path:
+            continue
+        paths.append(candidate)
+    return paths
 
 
 def _rtf_document(text: str) -> str:
@@ -222,6 +269,10 @@ def write_issue_metadata(issue_dir: Path, payload: dict[str, object]) -> Path:
     issue_dir.mkdir(parents=True, exist_ok=True)
     path = issue_metadata_path(issue_dir)
     path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (issue_dir / "metadata.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )

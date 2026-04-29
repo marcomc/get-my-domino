@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from get_my_domino.models import Article
+from get_my_domino.storage import write_article_metadata
+
+
+def test_write_article_metadata_normalizes_legacy_article_artifacts(tmp_path: Path) -> None:
+    target_dir = tmp_path / "01-e-la-casa-bianca-rest-sola"
+    target_dir.mkdir()
+    (target_dir / "01-2026-04-21-e-la-casa-bianca-rest-sola.html").write_text(
+        "<html></html>",
+        encoding="utf-8",
+    )
+    (target_dir / "01-2026-04-21-e-la-casa-bianca-rest-sola.txt").write_text(
+        "text",
+        encoding="utf-8",
+    )
+    (target_dir / "01-e-la-casa-bianca-rest-sola.m4a").write_bytes(b"canonical-audio")
+    (target_dir / "article.m4a").write_bytes(b"canonical-audio")
+
+    write_article_metadata(
+        target_dir,
+        Article(
+            title="E la Casa Bianca restò sola",
+            url="https://example.test/article",
+            text="Corpo.",
+            html="<html></html>",
+            author="Lorenzo Maria Ricci",
+        ),
+    )
+
+    assert (target_dir / "01-e-la-casa-bianca-rest-sola.html").exists()
+    assert (target_dir / "01-e-la-casa-bianca-rest-sola.txt").exists()
+    assert (target_dir / "01-e-la-casa-bianca-rest-sola.m4a").exists()
+    assert (target_dir / "metadata.json").exists()
+    assert not (target_dir / "01-2026-04-21-e-la-casa-bianca-rest-sola.html").exists()
+    assert not (target_dir / "01-2026-04-21-e-la-casa-bianca-rest-sola.txt").exists()
+    assert not (target_dir / "article.m4a").exists()

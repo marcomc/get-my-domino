@@ -23,6 +23,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New repair commands: `refresh-issue-metadata` to refresh downloaded issue
   metadata without touching audio, and `repackage-audiobook` to refresh that
   metadata and rebuild the `.m4b` from existing chapter audio.
+- Configurable audiobook filename templates with config defaults, per-command
+  CLI overrides, and a `rename-audiobooks` command that renames existing
+  `.m4b` files from embedded metadata tags.
+- Added `audiobook_auto` config support so full-issue sync/download flows can
+  package `.m4b` files automatically without passing `--audiobook`.
+- Preferred naming config keys are now `magazine_title`,
+  `filename_separator`, and `audiobook_name_format`, with the older
+  `audiobook_filename_*` keys still accepted for backward compatibility.
+- The storage layout is now rooted under `output_dir/library/` plus
+  `output_dir/audiobooks/`, with magazine issues under `library/rivista`,
+  weekly articles under `library/la-settimana-di-domino`, and single-article
+  audio co-located in each article folder instead of a separate `audio/`
+  tree. Existing legacy issue and audio trees are migrated lazily.
+- Added `output_parent_dir` and `collection_dir_name` so the top-level
+  collection directory can be derived from a configurable slug when `output_dir`
+  is not set explicitly.
 - Fixed article-author extraction to prefer explicit metadata and
   `article_byline` markup over unrelated site chrome text, including authors
   with initials such as `Z. Goggi`.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -200,3 +201,36 @@ def _cover_codec(cover_image_path: Path) -> str:
     if suffix in {".jpg", ".jpeg"}:
         return "copy"
     return "png"
+
+
+def read_audiobook_tags(path: Path) -> dict[str, str]:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise AudiobookError("Command 'ffprobe' is required for audiobook metadata inspection.")
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-show_entries",
+        "format_tags",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
+        raise AudiobookError(f"ffprobe failed for {path.name}: {detail}") from exc
+    payload = json.loads(result.stdout)
+    format_payload = payload.get("format")
+    if not isinstance(format_payload, dict):
+        return {}
+    tags = format_payload.get("tags")
+    if not isinstance(tags, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in tags.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }

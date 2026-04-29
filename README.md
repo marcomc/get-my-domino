@@ -133,10 +133,13 @@ default_output = "text"
 verbose = false
 base_url = "https://www.rivistadomino.it/"
 magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
-output_dir = "~/Documents/rivistadomino"
+output_parent_dir = "~/Documents"
+collection_dir_name = "domino"
+# output_dir = "~/Documents/domino"
 feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
 feed_folder_name = "la-settimana-di-domino"
 audio_auto = false
+audiobook_auto = false
 audio_format = "m4a"
 audio_timeout = 900
 audio_chunked = true
@@ -243,6 +246,7 @@ Command intent:
 | `sync-feed` | Scans the recurring weekly feed and downloads only missing articles; with `--audio`, also generates missing audio for already synced feed articles | Periodic weekly-feed updates and automation |
 | `refresh-issue-metadata` | Re-reads downloaded issue articles from the live site and refreshes local `metadata.json` plus `issue.json` | Metadata repairs after parser improvements or site changes |
 | `repackage-audiobook` | Runs issue-metadata refresh, then rebuilds the issue `.m4b` from existing chapter audio | Audiobook tag and cover repairs without re-synthesizing audio |
+| `rename-audiobooks` | Renames existing `.m4b` files from embedded tags using the configured filename template | Normalizing an audiobook library after changing naming rules |
 
 `download` is intentionally narrow: it does not scan the whole archive unless
 you select one issue with `--issue` and `--all`. `sync-magazine` is the
@@ -255,7 +259,9 @@ When you add `--audiobook` to `download --issue YYYY-MM --all` or to
 chapterized `.m4b` file under `output_dir/audiobooks/`. The package reuses the
 ordered per-article `.m4a` files as audiobook chapters, embeds the issue cover
 image when available, and writes issue-level metadata sidecars as
-`<issue-folder>/issue.json`.
+`<issue-folder>/issue.json`. If you set `audiobook_auto = true` in the config,
+the same packaging also happens automatically for `sync-magazine` and for full
+issue downloads via `download --issue YYYY-MM --all`.
 
 Verified audiobook metadata written into the `.m4b` container:
 
@@ -292,7 +298,96 @@ get-my-domino repackage-audiobook --issue 2026-04
 issue-level `issue.json` from the live site, but does not regenerate chapter
 audio and does not rebuild the `.m4b`. `repackage-audiobook` depends on that
 refresh step and then rebuilds the `.m4b` from the existing `.m4a` chapter
-files already present under `output_dir/audio/`.
+files already present inside each article folder.
+
+Audiobook filenames are configurable. By default they are written as:
+
+```text
+domino-2026-04-guaio-persiano.m4b
+```
+
+The default template is:
+
+```text
+{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}
+```
+
+The naming model is:
+
+- `magazine_title` is the base text you choose, for example `Domino` or
+  `Rivista Domino`
+- `{magazine}` inserts that text after filename-safe cleanup, preserving case
+  and spaces
+- `{magazine_slug}` is derived from `magazine_title` by lowercasing it and
+  replacing spaces or punctuation with the configured separator
+
+So:
+
+- `magazine_title = "Domino"` with `{magazine}` gives `Domino`
+- `magazine_title = "Domino"` with `{magazine_slug}` gives `domino`
+- `magazine_title = "Rivista Domino"` with separator `-` and
+  `{magazine_slug}` gives `rivista-domino`
+
+You can override that per command:
+
+```bash
+get-my-domino repackage-audiobook \
+  --issue 2026-04 \
+  --magazine-title "Rivista Domino" \
+  --filename-separator "." \
+  --audiobook-name-format "{magazine_slug}{sep}anno-{year}{sep}numero-{month}{sep}{title_slug}"
+```
+
+Preferred config keys:
+
+```toml
+magazine_title = "Domino"
+filename_separator = "-"
+audiobook_name_format = "{magazine}{sep}{year}{sep}{month}{sep}{title_slug}"
+```
+
+Older keys such as `audiobook_filename_magazine_title`,
+`audiobook_filename_separator`, and `audiobook_filename_format` are still
+accepted for backward compatibility, but the names above are now the preferred
+ones.
+
+Available filename fields:
+
+| Field | Meaning | Example |
+| --- | --- | --- |
+| `{magazine}` | Magazine title after filename-safe cleanup, preserving case and spaces | `Rivista Domino` |
+| `{magazine_slug}` | Lowercase slug derived from `magazine_title`, using the configured separator between words | `rivista-domino` |
+| `{sep}` | The configured separator | `-` |
+| `{year}` | Issue year from `YYYY-MM` | `2026` |
+| `{month}` | Issue month from `YYYY-MM` | `04` |
+| `{issue}` | Year and month joined with the configured separator | `2026-04` |
+| `{issue_compact}` | Year and month without a separator | `202604` |
+| `{title}` | Issue title after filename-safe cleanup, preserving case and spaces | `Guaio persiano` |
+| `{title_slug}` | Lowercase slug form of the issue title | `guaio-persiano` |
+
+Allowed separator characters are intentionally narrow so the result is safe on
+macOS and Linux:
+
+- `-`
+- `_`
+- `.`
+
+Examples:
+
+- `{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}` -> `domino-2026-04-guaio-persiano`
+- `{magazine}{sep}{year}{sep}{month}{sep}{title_slug}` -> `Domino-2026-04-guaio-persiano`
+- `{magazine_slug}{sep}anno-{year}{sep}numero-{month}{sep}{title_slug}` -> `rivista-domino-anno-2026-numero-04-guaio-persiano`
+- `{month}{sep}{year}{sep}{magazine_slug}{sep}{title_slug}` with `sep = "."` -> `04.2026.rivista-domino.guaio-persiano`
+
+Use `rename-audiobooks` after changing the template to normalize files already
+present in your library. It reads the embedded `.m4b` tags and rebuilds the
+filename from those tags, so it does not need the original article folders:
+
+```bash
+get-my-domino rename-audiobooks --dry-run
+get-my-domino rename-audiobooks --library-dir ~/Audiobooks/Domino
+get-my-domino rename-audiobooks ~/Audiobooks/Domino/legacy-file.m4b
+```
 
 Download specific articles:
 
@@ -391,28 +486,27 @@ Magazine articles are saved under:
 
 ```text
 output_dir/
-└── 2026-04-guaio-persiano/
-    ├── 01-l-editoriale/
-    │   └── 01-cosa-fare-a-teheran-quando-sei-morto/
-    │       ├── 01-cosa-fare-a-teheran-quando-sei-morto.html
-    │       ├── 01-cosa-fare-a-teheran-quando-sei-morto.txt
-    │       └── metadata.json
-    └── 02-la-guerra-va-male/
-        └── 02-e-la-casa-bianca-rest-sola/
+├── audiobooks/
+└── library/
+    └── rivista/
+        └── 2026-04-guaio-persiano/
+            ├── metadata.json
+            ├── issue.json
+            ├── 01-l-editoriale/
+            │   └── 01-cosa-fare-a-teheran-quando-sei-morto/
+            │       ├── 01-cosa-fare-a-teheran-quando-sei-morto.html
+            │       ├── 01-cosa-fare-a-teheran-quando-sei-morto.txt
+            │       ├── 01-cosa-fare-a-teheran-quando-sei-morto.m4a
+            │       └── metadata.json
+            └── 02-la-guerra-va-male/
+                └── 02-e-la-casa-bianca-rest-sola/
 ```
 
-Generated magazine audio is saved separately under `output_dir/audio` so audio
-players can browse it without article HTML, text, and metadata files:
+Single-article audio now lives beside the article exports and metadata, so the
+old top-level `output_dir/audio/` tree is no longer the canonical layout.
 
-```text
-output_dir/
-└── audio/
-    └── 2026-04-guaio-persiano/
-        ├── 01-cosa-fare-a-teheran-quando-sei-morto.m4a
-        └── 02-e-la-casa-bianca-rest-sola.m4a
-```
-
-Scan `La settimana di Domino` and save it under `output_dir/feed_folder_name`:
+Scan `La settimana di Domino` and save it under
+`output_dir/library/feed_folder_name`:
 
 ```bash
 get-my-domino sync-feed
@@ -428,11 +522,15 @@ article exports and regenerate their audio.
 Feed articles are saved with date-first names, for example:
 
 ```text
-output_dir/la-settimana-di-domino/
-└── 2026-04-24-usa-e-globalizzazione-guerra-in-medio-oriente/
+output_dir/
+└── library/
+    └── la-settimana-di-domino/
+        └── 2026-04-24-usa-e-globalizzazione-guerra-in-medio-oriente/
+            ├── 2026-04-24-usa-e-globalizzazione-guerra-in-medio-oriente.html
+            ├── 2026-04-24-usa-e-globalizzazione-guerra-in-medio-oriente.txt
+            ├── 2026-04-24-usa-e-globalizzazione-guerra-in-medio-oriente.m4a
+            └── metadata.json
 ```
-
-Generated feed audio is saved under `output_dir/audio/feed_folder_name/`.
 
 Create audio from downloaded text files:
 
@@ -566,6 +664,10 @@ Set `audio_auto = true` in the config to generate audio automatically whenever
 `--no-audio` for one run without synthesis. `audio_format = "mp4a"` is accepted
 as an alias for `m4a`.
 
+Set `audiobook_auto = true` in the config to generate issue-level `.m4b`
+audiobooks automatically for `sync-magazine` and `download --issue YYYY-MM --all`.
+This does not affect `sync-feed`, which only produces article-level audio.
+
 Leave `siri_voice` empty to use the current macOS system voice. This is the
 only supported way to use Siri/neural voices from this CLI: the app calls `say`
 without `-v`, matching plain `say "ciao"` behavior, and macOS delegates speech
@@ -660,3 +762,17 @@ Before tagging a release:
 ## License
 
 This project is released under the MIT License. See [LICENSE](LICENSE).
+Root storage is configurable in two ways:
+
+- set `output_dir` directly when you want one explicit absolute path
+- or set `output_parent_dir` plus `collection_dir_name`
+
+When `output_dir` is omitted, the default root folder becomes:
+
+```text
+output_parent_dir/collection_dir_name
+```
+
+`collection_dir_name` is intended to be a filesystem slug. By default it is
+derived from `magazine_title` in lowercase with underscores, for example
+`"Rivista Domino"` -> `rivista_domino`.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 from urllib.parse import urljoin
 
@@ -316,7 +316,8 @@ class WebClient:
         articles: list[Link] = []
         current_group: str | None = None
         order = 1
-        for element in article_panel.find_all(["h3", "a"]):
+        last_article_index: int | None = None
+        for element in article_panel.find_all(["h3", "a", "div"]):
             if not isinstance(element, Tag):
                 continue
             text = " ".join(element.get_text(" ", strip=True).split())
@@ -324,9 +325,17 @@ class WebClient:
                 continue
             if element.name == "h3":
                 current_group = text
+                last_article_index = None
+                continue
+            classes = element.get("class")
+            if element.name == "div" and isinstance(classes, list) and "article_byline" in classes:
+                if last_article_index is not None:
+                    articles[last_article_index] = replace(
+                        articles[last_article_index],
+                        author=text,
+                    )
                 continue
             href = element.get("href")
-            classes = element.get("class")
             if not href or not isinstance(classes, list) or "article_title" not in classes:
                 continue
             absolute_url = urljoin(page_url, str(href))
@@ -339,6 +348,7 @@ class WebClient:
                     order=order,
                 )
             )
+            last_article_index = len(articles) - 1
             order += 1
 
         return Issue(

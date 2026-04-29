@@ -114,7 +114,9 @@ def extract_article(
     content_selectors: Iterable[str],
 ) -> Article:
     soup = BeautifulSoup(html, "html.parser")
-    title = _clean_text(soup.title.get_text(" ", strip=True)) if soup.title else page_url
+    title = _normalize_article_title(
+        _clean_text(soup.title.get_text(" ", strip=True)) if soup.title else page_url
+    )
 
     for selector in REMOVABLE_SELECTORS:
         for element in soup.select(selector):
@@ -132,7 +134,7 @@ def extract_article(
     if heading is not None:
         heading_text = _clean_text(heading.get_text(" ", strip=True))
         if heading_text:
-            title = heading_text
+            title = _normalize_article_title(heading_text)
     author = _extract_author(soup, content=content, heading=heading)
 
     clean_html = str(content)
@@ -239,6 +241,14 @@ def _clean_author(value: str) -> str | None:
     if re.search(r"[.!?:;]", cleaned):
         return None
     return cleaned
+
+
+def _normalize_article_title(value: str) -> str:
+    cleaned = _clean_text(value)
+    for suffix in (" - Rivista Domino", " - Domino"):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)].strip()
+    return cleaned or value
 
 
 def _strip_author_prefix(value: str) -> str:
