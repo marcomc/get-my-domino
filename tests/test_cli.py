@@ -1148,6 +1148,21 @@ def test_issue_audiobook_falls_back_to_legacy_audio_names(
     assert packaged[0]["chapters"][0].audio_path == article_dir / "01-editoriale.m4a"
 
 
+def test_legacy_audio_output_path_uses_root_audio_for_feed_articles(tmp_path: Path) -> None:
+    output_dir = tmp_path / "exports"
+    article_dir = (
+        output_dir / "library" / "la-settimana-di-domino" / "2026-04-21-e-la-casa-bianca-rest-sola"
+    )
+
+    legacy_path = cli._legacy_audio_output_path(
+        article_dir,
+        root_output_dir=output_dir,
+        audio_format="m4a",
+    )
+
+    assert legacy_path == output_dir / "audio" / "2026-04-21-e-la-casa-bianca-rest-sola.m4a"
+
+
 def test_refresh_issue_metadata_updates_article_and_issue_sidecars(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -1301,9 +1316,13 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
         pass
 
     def fake_selected_issue_details_or_error(
-        client: object, *, all_issues: bool, issue_selector: str | None
+        client: object,
+        *,
+        all_issues: bool,
+        issue_selector: str | None,
+        output_dir: Path | None = None,
     ) -> list[Issue]:
-        del client, all_issues, issue_selector
+        del client, all_issues, issue_selector, output_dir
         return [issue]
 
     def fake_refresh_downloaded_issue_metadata(
@@ -1349,6 +1368,134 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
 
     assert result == 0
     assert events == ["refresh", "package"]
+
+
+def test_refresh_issue_metadata_all_uses_only_downloaded_issues(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    downloaded_issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issues/2026-04",
+        issue_code="2026-04",
+        articles=[],
+    )
+    missing_issue = Issue(
+        title="Assalto all'Iran",
+        url="https://example.test/issues/2026-03",
+        issue_code="2026-03",
+        articles=[],
+    )
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    (output_dir / "2026-04-guaio-persiano").mkdir(parents=True)
+    refreshed: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [
+                Link(title="4/2026 Guaio persiano", url=downloaded_issue.url),
+                Link(title="3/2026 Assalto all'Iran", url=missing_issue.url),
+            ]
+
+        def discover_issue(self, url: str) -> Issue:
+            if url == downloaded_issue.url:
+                return downloaded_issue
+            if url == missing_issue.url:
+                return missing_issue
+            raise AssertionError(f"unexpected url {url}")
+
+    def fake_refresh(client: WebClient, issue: Issue, *, output_dir: Path) -> tuple[object, object]:
+        del client, output_dir
+        refreshed.append(issue.issue_code or "")
+        return object(), None
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_refresh_downloaded_issue_metadata", fake_refresh)
+
+    result = cli._handle_refresh_issue_metadata(
+        AppConfig(output_dir=tmp_path / "exports"),
+        root_output_dir=tmp_path / "exports",
+        all_issues=True,
+        issue_selector=None,
+    )
+
+    assert result == 0
+    assert refreshed == ["2026-04"]
+
+
+def test_repackage_audiobook_all_uses_only_downloaded_issues(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    downloaded_issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issues/2026-04",
+        issue_code="2026-04",
+        articles=[],
+    )
+    missing_issue = Issue(
+        title="Assalto all'Iran",
+        url="https://example.test/issues/2026-03",
+        issue_code="2026-03",
+        articles=[],
+    )
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    issue_dir = output_dir / "2026-04-guaio-persiano"
+    issue_dir.mkdir(parents=True)
+    packaged: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [
+                Link(title="4/2026 Guaio persiano", url=downloaded_issue.url),
+                Link(title="3/2026 Assalto all'Iran", url=missing_issue.url),
+            ]
+
+        def discover_issue(self, url: str) -> Issue:
+            if url == downloaded_issue.url:
+                return downloaded_issue
+            if url == missing_issue.url:
+                return missing_issue
+            raise AssertionError(f"unexpected url {url}")
+
+    def fake_refresh(
+        client: WebClient,
+        issue: Issue,
+        *,
+        output_dir: Path,
+    ) -> tuple[cli.IssueBundlePlan, Path | None]:
+        del client, output_dir
+        return cli.IssueBundlePlan(issue=issue, issue_dir=issue_dir, article_dirs=[]), None
+
+    def fake_build_issue_audiobook(
+        plan: cli.IssueBundlePlan,
+        *,
+        root_output_dir: Path,
+        cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
+    ) -> Path:
+        del root_output_dir, cover_image_path, filename_settings
+        packaged.append(plan.issue.issue_code or "")
+        return issue_dir / "book.m4b"
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_refresh_downloaded_issue_metadata", fake_refresh)
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+
+    result = cli._handle_repackage_audiobook(
+        AppConfig(output_dir=tmp_path / "exports"),
+        root_output_dir=tmp_path / "exports",
+        all_issues=True,
+        issue_selector=None,
+        filename_settings=AudiobookFilenameSettings(),
+    )
+
+    assert result == 0
+    assert packaged == ["2026-04"]
 
 
 def test_audiobook_output_path_uses_configurable_filename_template() -> None:

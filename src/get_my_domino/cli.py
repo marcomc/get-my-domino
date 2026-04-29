@@ -1733,10 +1733,26 @@ def _selected_issue_details_or_error(
     *,
     all_issues: bool,
     issue_selector: str | None,
+    output_dir: Path | None = None,
 ) -> list[Issue]:
     if not all_issues and issue_selector is None:
         raise ValueError("Use --issue YYYY-NN or --all.")
     issues = _sort_catalog_issues(client.discover_issues())
+    if all_issues:
+        selected = [
+            issue_detail
+            for issue_link in issues
+            if (issue_detail := client.discover_issue(issue_link.url))
+            and (
+                output_dir is None
+                or (
+                    output_dir / _issue_folder_name(issue_detail.title, issue_detail.issue_code)
+                ).exists()
+            )
+        ]
+        if not selected and output_dir is not None:
+            raise ValueError("No downloaded issues selected.")
+        return selected
     selected = _selected_catalog_issues(
         client,
         issues,
@@ -2789,6 +2805,7 @@ def _handle_refresh_issue_metadata(
         client,
         all_issues=all_issues,
         issue_selector=issue_selector,
+        output_dir=output_dir,
     )
     for issue in issues:
         print(f"issue: {issue.title}")
@@ -2810,6 +2827,7 @@ def _handle_repackage_audiobook(
         client,
         all_issues=all_issues,
         issue_selector=issue_selector,
+        output_dir=output_dir,
     )
     for issue in issues:
         print(f"issue: {issue.title}")
@@ -3090,14 +3108,14 @@ def _legacy_audio_output_path(
     audio_format: str,
 ) -> Path:
     basename = article_basename(article_dir)
-    issue_dir = article_dir
-    while issue_dir.parent != issue_dir:
-        if re.fullmatch(r"\d{4}-\d{2}-.+", issue_dir.name):
-            legacy_dir = root_output_dir / "audio" / issue_dir.name
-            break
-        issue_dir = issue_dir.parent
-    else:
+    magazine_dir = _magazine_output_dir(root_output_dir)
+    try:
+        relative = article_dir.relative_to(magazine_dir)
+    except ValueError:
         legacy_dir = root_output_dir / "audio"
+    else:
+        issue_name = relative.parts[0] if relative.parts else ""
+        legacy_dir = root_output_dir / "audio" / issue_name
     return legacy_dir / f"{basename}.{audio_format}"
 
 
