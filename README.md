@@ -3,6 +3,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [Use and Rights](#use-and-rights)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -15,11 +16,36 @@
 
 ## Overview
 
-`get-my-domino` downloads articles from `rivistadomino.it` for offline reading
-and audio generation. It discovers magazine issues and recurring article feeds,
-lists articles with their section grouping, exports each article as clean HTML,
-UTF-8 text, optional RTF, and lightweight metadata, and can turn the text into
-local `.m4a` or `.mp3` audio files with the macOS `say` voice engine.
+`get-my-domino` is an independent, unofficial CLI for readers who already have
+lawful access to content on `rivistadomino.it`. It downloads articles for
+offline reading and audio generation, discovers magazine issues and recurring
+article feeds, lists articles with their section grouping, exports each article
+as clean HTML, UTF-8 text, optional RTF, and lightweight metadata, and can
+turn the text into local `.m4a` or `.mp3` audio files with the macOS `say`
+voice engine.
+
+## Use and Rights
+
+This project is intended only for people who already have an active, paid, and
+lawful right to access the relevant Rivista Domino digital content.
+
+The generated text exports, per-article audio files, and issue-level
+audiobooks are intended for strictly private, personal use, including
+accessibility and reading-support scenarios such as visual impairment or other
+reading difficulties. They are not intended for redistribution, public
+performance, publication, sharing with non-subscribers, or any other use that
+could infringe third-party rights.
+
+This project is not designed, marketed, or maintained as a tool for unlawful
+copying or publication of copyrighted material. You are responsible for using
+it only in ways permitted by applicable law and by the terms of your
+subscription.
+
+`get-my-domino` is an independent reader-built tool. It is not affiliated with,
+endorsed by, sponsored by, or operated by Rivista Domino, Dario Fabbri,
+Enrico Mentana, or Edizioni Gommonica S.r.l., which the Rivista Domino site
+identifies in its service terms and subscription pages as the service provider
+and publishing company for the digital offering.
 
 ## Features
 

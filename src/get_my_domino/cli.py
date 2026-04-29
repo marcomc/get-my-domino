@@ -235,7 +235,8 @@ def build_parser() -> argparse.ArgumentParser:
         "catalog",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Browse Domino content in a readable format. Without options it lists available "
+            "Browse subscriber-accessible Domino content in a readable format. "
+            "Without options it lists available "
             "issues; --issue YYYY-MM expands one issue; --all expands every issue; --feed "
             "appends weekly feed entries."
         ),

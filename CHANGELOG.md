@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.m4b` files from embedded metadata tags.
 - Added `audiobook_auto` config support so full-issue sync/download flows can
   package `.m4b` files automatically without passing `--audiobook`.
+- Added a clearer README disclaimer that this is an unofficial, unaffiliated,
+  private-use accessibility/personal-reading tool for subscribers with lawful
+  access, not a redistribution tool.
 - Preferred naming config keys are now `magazine_title`,
   `filename_separator`, and `audiobook_name_format`, with the older
   `audiobook_filename_*` keys still accepted for backward compatibility.
