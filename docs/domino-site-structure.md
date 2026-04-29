@@ -90,7 +90,7 @@ The current selectors and logic are:
 
 - title: `h1.product_title, h1.entry-title, h1`
 - summary block: `.summary, .entry-summary`
-- published month: regex `MM/YYYY` extracted from summary text
+- issue code: regex `NN/YYYY` extracted from summary text and stored as `YYYY-NN`
 - article panel: `#tab-articles`
 - cover image candidates:
   - `.woocommerce-product-gallery__image img`

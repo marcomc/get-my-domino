@@ -52,7 +52,7 @@ and publishing company for the digital offering.
 - Packaged command-line app exposed as `get-my-domino`
 - `python -m get_my_domino` entry point
 - Issue and article discovery from configurable link patterns
-- Magazine export grouped by issue month, issue title, section, and article
+- Magazine export grouped by issue code, issue title, section, and article
   date
 - `La settimana di Domino` export grouped in one dated article collection
 - Clean article export to same-name `.html` and `.txt` files, optional `.rtf`,
@@ -253,11 +253,11 @@ get-my-domino catalog --all
 get-my-domino catalog --all --feed --pages 3
 ```
 
-`catalog` lists all available magazine issues by `YYYY-MM` month code. `--issue`
-expands one issue by month code or URL, preserving its sections and article
+`catalog` lists all available magazine issues by `YYYY-NN` issue code. `--issue`
+ expands one issue by issue code or URL, preserving its sections and article
 order. `--all` expands every issue. `--feed` appends the recurring
-`La settimana di Domino` entries. Catalog issue lists are sorted by `YYYY-MM`
-month and omit storefront price text.
+`La settimana di Domino` entries. Catalog issue lists are sorted by `YYYY-NN`
+issue code and omit storefront price text.
 
 Use `catalog` for human browsing. The older `issues`, `articles`, and `feed`
 commands remain as raw URL list commands for scripts and JSON output.
@@ -280,14 +280,14 @@ database/archive maintenance command: it walks all available magazine issues,
 uses the local manifest to skip articles already present, and adds only new
 articles. `sync-feed` does the same for `La settimana di Domino`.
 
-When you add `--audiobook` to `download --issue YYYY-MM --all` or to
+When you add `--audiobook` to `download --issue YYYY-NN --all` or to
 `sync-magazine`, the CLI also packages each complete magazine issue as one
 chapterized `.m4b` file under `output_dir/audiobooks/`. The package reuses the
 ordered per-article `.m4a` files as audiobook chapters, embeds the issue cover
 image when available, and writes issue-level metadata sidecars as
 `<issue-folder>/issue.json`. If you set `audiobook_auto = true` in the config,
 the same packaging also happens automatically for `sync-magazine` and for full
-issue downloads via `download --issue YYYY-MM --all`.
+issue downloads via `download --issue YYYY-NN --all`.
 
 Verified audiobook metadata written into the `.m4b` container:
 
@@ -335,7 +335,7 @@ domino-2026-04-guaio-persiano.m4b
 The default template is:
 
 ```text
-{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}
+{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}
 ```
 
 The naming model is:
@@ -361,7 +361,7 @@ get-my-domino repackage-audiobook \
   --issue 2026-04 \
   --magazine-title "Rivista Domino" \
   --filename-separator "." \
-  --audiobook-name-format "{magazine_slug}{sep}anno-{year}{sep}numero-{month}{sep}{title_slug}"
+  --audiobook-name-format "{magazine_slug}{sep}anno-{year}{sep}numero-{number}{sep}{title_slug}"
 ```
 
 Preferred config keys:
@@ -369,7 +369,7 @@ Preferred config keys:
 ```toml
 magazine_title = "Domino"
 filename_separator = "-"
-audiobook_name_format = "{magazine}{sep}{year}{sep}{month}{sep}{title_slug}"
+audiobook_name_format = "{magazine}{sep}{year}{sep}{number}{sep}{title_slug}"
 ```
 
 Older keys such as `audiobook_filename_magazine_title`,
@@ -384,10 +384,10 @@ Available filename fields:
 | `{magazine}` | Magazine title after filename-safe cleanup, preserving case and spaces | `Rivista Domino` |
 | `{magazine_slug}` | Lowercase slug derived from `magazine_title`, using the configured separator between words | `rivista-domino` |
 | `{sep}` | The configured separator | `-` |
-| `{year}` | Issue year from `YYYY-MM` | `2026` |
-| `{month}` | Issue month from `YYYY-MM` | `04` |
-| `{issue}` | Year and month joined with the configured separator | `2026-04` |
-| `{issue_compact}` | Year and month without a separator | `202604` |
+| `{year}` | Issue year from `YYYY-NN` | `2026` |
+| `{number}` | Issue number within that year from `YYYY-NN` | `04` |
+| `{issue}` | Year and issue number joined with the configured separator | `2026-04` |
+| `{issue_compact}` | Year and issue number without a separator | `202604` |
 | `{title}` | Issue title after filename-safe cleanup, preserving case and spaces | `Guaio persiano` |
 | `{title_slug}` | Lowercase slug form of the issue title | `guaio-persiano` |
 
@@ -400,10 +400,10 @@ macOS and Linux:
 
 Examples:
 
-- `{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}` -> `domino-2026-04-guaio-persiano`
-- `{magazine}{sep}{year}{sep}{month}{sep}{title_slug}` -> `Domino-2026-04-guaio-persiano`
-- `{magazine_slug}{sep}anno-{year}{sep}numero-{month}{sep}{title_slug}` -> `rivista-domino-anno-2026-numero-04-guaio-persiano`
-- `{month}{sep}{year}{sep}{magazine_slug}{sep}{title_slug}` with `sep = "."` -> `04.2026.rivista-domino.guaio-persiano`
+- `{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}` -> `domino-2026-04-guaio-persiano`
+- `{magazine}{sep}{year}{sep}{number}{sep}{title_slug}` -> `Domino-2026-04-guaio-persiano`
+- `{magazine_slug}{sep}anno-{year}{sep}numero-{number}{sep}{title_slug}` -> `rivista-domino-anno-2026-numero-04-guaio-persiano`
+- `{number}{sep}{year}{sep}{magazine_slug}{sep}{title_slug}` with `sep = "."` -> `04.2026.rivista-domino.guaio-persiano`
 
 Use `rename-audiobooks` after changing the template to normalize files already
 present in your library. It reads the embedded `.m4b` tags and rebuilds the
@@ -422,7 +422,7 @@ get-my-domino download \
   "https://rivistadomino.it/articolo/example/"
 ```
 
-You can also download one magazine article by issue month and article order
+You can also download one magazine article by issue code and article order
 from `catalog --issue`:
 
 ```bash
@@ -691,7 +691,7 @@ Set `audio_auto = true` in the config to generate audio automatically whenever
 as an alias for `m4a`.
 
 Set `audiobook_auto = true` in the config to generate issue-level `.m4b`
-audiobooks automatically for `sync-magazine` and `download --issue YYYY-MM --all`.
+audiobooks automatically for `sync-magazine` and `download --issue YYYY-NN --all`.
 This does not affect `sync-feed`, which only produces article-level audio.
 
 Leave `siri_voice` empty to use the current macOS system voice. This is the

@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from .config import AppConfig
-from .extract import article_date_from_url, extract_article, extract_links, issue_month_from_text
+from .extract import article_date_from_url, extract_article, extract_links, issue_code_from_text
 from .models import Article, Issue, Link
 from .session_store import SessionStoreError, load_cookies, save_cookies
 
@@ -293,7 +293,7 @@ class WebClient:
             if summary is not None
             else soup.get_text(" ", strip=True)
         )
-        published_month = issue_month_from_text(summary_text)
+        issue_code = issue_code_from_text(summary_text)
         cover_image_url = self._issue_cover_image_url(soup, page_url=page_url)
         summary_description = self._issue_summary_description(summary_text, title=title)
 
@@ -302,7 +302,7 @@ class WebClient:
             return Issue(
                 title=title,
                 url=page_url,
-                published_month=published_month,
+                issue_code=issue_code,
                 cover_image_url=cover_image_url,
                 summary=summary_description,
                 articles=extract_links(
@@ -354,7 +354,7 @@ class WebClient:
         return Issue(
             title=title,
             url=page_url,
-            published_month=published_month,
+            issue_code=issue_code,
             articles=articles,
             cover_image_url=cover_image_url,
             summary=summary_description,

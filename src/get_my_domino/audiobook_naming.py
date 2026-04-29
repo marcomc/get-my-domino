@@ -10,7 +10,7 @@ from .models import Issue
 
 DEFAULT_AUDIOBOOK_MAGAZINE_TITLE = "Domino"
 DEFAULT_AUDIOBOOK_FILENAME_SEPARATOR = "-"
-DEFAULT_AUDIOBOOK_FILENAME_FORMAT = "{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}"
+DEFAULT_AUDIOBOOK_FILENAME_FORMAT = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
 
 _SAFE_SEPARATOR_RE = re.compile(r"[-_.]+")
 _ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
@@ -39,7 +39,7 @@ def validate_audiobook_format(format_template: str) -> str:
         "magazine_slug",
         "sep",
         "year",
-        "month",
+        "number",
         "issue",
         "issue_compact",
         "title",
@@ -61,7 +61,7 @@ def render_audiobook_filename(
     *,
     issue_title: str,
     year: str,
-    month: str,
+    number: str,
     settings: AudiobookFilenameSettings,
 ) -> str:
     separator = validate_audiobook_separator(settings.separator)
@@ -73,9 +73,9 @@ def render_audiobook_filename(
         "magazine_slug": _slug_text(magazine_clean, separator=separator),
         "sep": separator,
         "year": year,
-        "month": month,
-        "issue": f"{year}{separator}{month}",
-        "issue_compact": f"{year}{month}",
+        "number": number,
+        "issue": f"{year}{separator}{number}",
+        "issue_compact": f"{year}{number}",
         "title": issue_title_clean,
         "title_slug": _slug_text(issue_title_clean, separator=separator),
     }
@@ -92,11 +92,11 @@ def render_audiobook_filename_for_issue(
     *,
     settings: AudiobookFilenameSettings,
 ) -> str:
-    year, month = issue_year_month(issue)
+    year, number = issue_year_number(issue)
     return render_audiobook_filename(
         issue_title=issue.title,
         year=year,
-        month=month,
+        number=number,
         settings=settings,
     )
 
@@ -105,28 +105,31 @@ def render_audiobook_filename_from_tags(
     *,
     title: str,
     date: str,
+    issue_code: str | None,
     settings: AudiobookFilenameSettings,
 ) -> str:
-    year, month = year_month_from_date(date)
+    year, number = year_number_from_tags(date=date, issue_code=issue_code)
     return render_audiobook_filename(
         issue_title=title,
         year=year,
-        month=month,
+        number=number,
         settings=settings,
     )
 
 
-def issue_year_month(issue: Issue) -> tuple[str, str]:
-    published_month = issue.published_month
-    if published_month and re.fullmatch(r"\d{4}-\d{2}", published_month):
-        return tuple(published_month.split("-", 1))  # type: ignore[return-value]
-    raise ValueError(f"Issue {issue.title!r} does not expose a valid published month.")
+def issue_year_number(issue: Issue) -> tuple[str, str]:
+    issue_code = issue.issue_code
+    if issue_code and re.fullmatch(r"\d{4}-\d{2}", issue_code):
+        return tuple(issue_code.split("-", 1))  # type: ignore[return-value]
+    raise ValueError(f"Issue {issue.title!r} does not expose a valid issue code.")
 
 
-def year_month_from_date(value: str) -> tuple[str, str]:
-    match = re.match(r"(\d{4})-(\d{2})", value)
+def year_number_from_tags(*, date: str, issue_code: str | None = None) -> tuple[str, str]:
+    if issue_code and re.fullmatch(r"\d{4}-\d{2}", issue_code):
+        return tuple(issue_code.split("-", 1))  # type: ignore[return-value]
+    match = re.match(r"(\d{4})-(\d{2})", date)
     if not match:
-        raise ValueError(f"Audiobook date tag {value!r} does not contain a YYYY-MM prefix.")
+        raise ValueError(f"Audiobook date tag {date!r} does not contain a YYYY-NN prefix.")
     return match.group(1), match.group(2)
 
 

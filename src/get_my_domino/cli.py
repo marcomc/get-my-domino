@@ -39,7 +39,7 @@ from .config import (
     normalize_non_negative_int,
     normalize_positive_int,
 )
-from .extract import article_date_from_url, issue_month_from_text, slugify
+from .extract import article_date_from_url, issue_code_from_text, slugify
 from .models import Article, Issue, Link
 from .session_store import clear_cookies
 from .speech_normalize import (
@@ -237,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Browse subscriber-accessible Domino content in a readable format. "
             "Without options it lists available "
-            "issues; --issue YYYY-MM expands one issue; --all expands every issue; --feed "
+            "issues; --issue YYYY-NN expands one issue; --all expands every issue; --feed "
             "appends weekly feed entries."
         ),
         epilog=(
@@ -256,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     catalog_parser.add_argument(
         "--issue",
-        help="Show one issue by YYYY-MM issue code or by issue URL.",
+        help="Show one issue by YYYY-NN issue code or by issue URL.",
     )
     catalog_parser.add_argument(
         "--feed",
@@ -281,7 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     download_parser.add_argument(
         "--issue",
-        help="Select a magazine issue by YYYY-MM issue code.",
+        help="Select a magazine issue by YYYY-NN issue code.",
     )
     download_parser.add_argument(
         "--article",
@@ -357,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     refresh_issue_parser.add_argument(
         "--issue",
-        help="Refresh one issue by YYYY-MM issue code or by issue URL.",
+        help="Refresh one issue by YYYY-NN issue code or by issue URL.",
     )
     refresh_issue_parser.add_argument(
         "--all",
@@ -376,7 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     repackage_parser.add_argument(
         "--issue",
-        help="Repackage one issue by YYYY-MM issue code or by issue URL.",
+        help="Repackage one issue by YYYY-NN issue code or by issue URL.",
     )
     repackage_parser.add_argument(
         "--all",
@@ -576,7 +576,7 @@ def _add_audiobook_name_options(parser: argparse.ArgumentParser) -> None:
         "--audiobook-name-format",
         help=(
             "Audiobook filename template. Available fields: {magazine}, {magazine_slug}, "
-            "{sep}, {year}, {month}, {issue}, {issue_compact}, {title}, {title_slug}."
+            "{sep}, {year}, {number}, {issue}, {issue_compact}, {title}, {title_slug}."
         ),
     )
 
@@ -843,6 +843,8 @@ def _legacy_weekly_audio_target_dir(weekly_scope: Path, *, stem: str) -> Path | 
 
 
 def _audiobook_requested(args: argparse.Namespace, config: AppConfig) -> bool:
+    if bool(getattr(args, "no_audio", False)):
+        return False
     return bool(getattr(args, "audiobook", False)) or config.audiobook_auto
 
 
@@ -1007,10 +1009,10 @@ def _resolve_issue_selector(issues: list[Link], selector: str) -> str:
     if selector.isdecimal():
         raise ValueError(
             "Numeric issue selectors are no longer used. "
-            "Use a YYYY-MM issue code from `catalog`, or pass the issue URL."
+            "Use a YYYY-NN issue code from `catalog`, or pass the issue URL."
         )
     if re.fullmatch(r"\d{4}-\d{2}", selector):
-        matches = [issue for issue in issues if issue_month_from_text(issue.title) == selector]
+        matches = [issue for issue in issues if issue_code_from_text(issue.title) == selector]
         if not matches:
             raise ValueError(f"Issue code {selector} was not found in the available catalog.")
         if len(matches) > 1:
@@ -1026,9 +1028,9 @@ def _print_issue_index(issues: list[Link]) -> None:
         print("No issues found.")
         return
     for index, issue in enumerate(issues, start=1):
-        month, title, synopsis = _issue_summary_parts(issue.title)
-        display_month = month or "unknown"
-        print(f"{display_month}  {title}")
+        issue_code, title, synopsis = _issue_summary_parts(issue.title)
+        display_issue_code = issue_code or "unknown"
+        print(f"{display_issue_code}  {title}")
         if synopsis:
             for line in textwrap.wrap(synopsis, width=88):
                 print(f"    {line}")
@@ -1041,8 +1043,8 @@ def _print_issue_detail(issue: Issue) -> None:
     title = _display_title(issue.title)
     print(title)
     print("=" * len(title))
-    if issue.published_month:
-        print(f"month: {issue.published_month}")
+    if issue.issue_code:
+        print(f"issue: {issue.issue_code}")
     published_date = _issue_published_date(issue)
     if published_date:
         print(f"published: {published_date}")
@@ -1127,22 +1129,22 @@ def _sort_catalog_issues(issues: list[Link]) -> list[Link]:
 
 
 def _issue_sort_key(title: str) -> tuple[str, str]:
-    month = issue_month_from_text(title) or "0000-00"
-    return (month, _strip_price_text(title))
+    issue_code = issue_code_from_text(title) or "0000-00"
+    return (issue_code, _strip_price_text(title))
 
 
 def _issue_summary_parts(title: str) -> tuple[str | None, str, str | None]:
     clean_title = " ".join(title.split())
-    month = issue_month_from_text(clean_title)
+    issue_code = issue_code_from_text(clean_title)
     first_price = re.search(_PRICE_PATTERN, clean_title)
     if first_price is None:
-        return month, _strip_issue_month(_strip_price_text(clean_title)), None
+        return issue_code, _strip_issue_code(_strip_price_text(clean_title)), None
 
     title_part = clean_title[: first_price.start()]
     synopsis_part = clean_title[first_price.end() :]
-    title_part = _strip_issue_month(_strip_price_text(title_part))
+    title_part = _strip_issue_code(_strip_price_text(title_part))
     synopsis_part = _strip_price_text(synopsis_part).strip(" -–—:")
-    return month, title_part, synopsis_part or None
+    return issue_code, title_part, synopsis_part or None
 
 
 _CURRENCY_PATTERN = r"(?:€|\bEUR\b)"
@@ -1169,7 +1171,7 @@ def _strip_price_text(title: str) -> str:
     return " ".join(without_prices.replace(" - ", " ").split())
 
 
-def _strip_issue_month(title: str) -> str:
+def _strip_issue_code(title: str) -> str:
     return re.sub(r"^\d{1,2}/\d{4}\s+", "", title).strip()
 
 
@@ -1671,7 +1673,7 @@ def _stored_issue_article_dirs(
     if missing_dirs:
         raise ValueError(
             "Missing article directories for issue "
-            f"{issue.published_month or issue.title}: {missing_dirs[0]}"
+            f"{issue.issue_code or issue.title}: {missing_dirs[0]}"
         )
     for article, stored_dir in zip(issue.articles, canonical_dirs, strict=True):
         manifest[article.url] = str(stored_dir)
@@ -1682,7 +1684,7 @@ def _stored_issue_article_dirs(
 def _issue_article_metadata(issue: Issue, article: Link) -> dict[str, object]:
     return {
         "issue_title": issue.title,
-        "issue_month": issue.published_month,
+        "issue_code": issue.issue_code,
         "section": article.group or "Articoli",
         "order": article.order,
         "issue_author": article.author,
@@ -1696,7 +1698,7 @@ def _refresh_downloaded_issue_metadata(
     *,
     output_dir: Path,
 ) -> tuple[IssueBundlePlan, Path | None]:
-    issue_dir = output_dir / _issue_folder_name(issue.title, issue.published_month)
+    issue_dir = output_dir / _issue_folder_name(issue.title, issue.issue_code)
     article_dirs = _stored_issue_article_dirs(
         issue,
         issue_dir=issue_dir,
@@ -1733,7 +1735,7 @@ def _selected_issue_details_or_error(
     issue_selector: str | None,
 ) -> list[Issue]:
     if not all_issues and issue_selector is None:
-        raise ValueError("Use --issue YYYY-MM or --all.")
+        raise ValueError("Use --issue YYYY-NN or --all.")
     issues = _sort_catalog_issues(client.discover_issues())
     selected = _selected_catalog_issues(
         client,
@@ -1780,8 +1782,8 @@ def _issue_summary(issue: Issue) -> str | None:
     summary = issue.summary
     if summary:
         return summary
-    month, title, synopsis = _issue_summary_parts(issue.title)
-    del month, title
+    issue_code, title, synopsis = _issue_summary_parts(issue.title)
+    del issue_code, title
     return synopsis
 
 
@@ -1814,7 +1816,7 @@ def _write_issue_sidecar(
     payload: dict[str, object] = {
         "title": issue.title,
         "url": issue.url,
-        "published_month": issue.published_month,
+        "issue_code": issue.issue_code,
         "published_date": _issue_release_date(issue),
         "summary": _issue_summary(issue),
         "cover_image_url": issue.cover_image_url,
@@ -1842,6 +1844,7 @@ def _write_issue_sidecar(
             {
                 "order": article.order,
                 "title": article.title,
+                "section": article.group or "Articoli",
                 "author": _article_author(article_sidecars, index),
                 "article_dir": relative_article_dirs[index]
                 if index < len(relative_article_dirs)
@@ -1870,7 +1873,11 @@ def _build_issue_audiobook(
     contributors = _issue_contributors(article_sidecars)
     chapters = [
         AudiobookChapter(
-            title=_chapter_label(article.title, _article_author(article_sidecars, index)),
+            title=_chapter_label(
+                article.title,
+                _article_author(article_sidecars, index),
+                order=article.order or index + 1,
+            ),
             audio_path=_resolve_issue_audio_path(
                 article,
                 article_dir,
@@ -1893,6 +1900,7 @@ def _build_issue_audiobook(
         "publisher": "Rivista Domino",
         "genre": "Magazine",
         "comment": plan.issue.url,
+        "grouping": plan.issue.issue_code or "",
     }
     if joined_contributors:
         metadata["composer"] = joined_contributors
@@ -1949,10 +1957,11 @@ def _issue_contributors(article_sidecars: list[dict[str, object]]) -> list[str]:
     return contributors
 
 
-def _chapter_label(title: str, author: str | None) -> str:
+def _chapter_label(title: str, author: str | None, *, order: int) -> str:
+    prefix = f"{order:02d}. "
     if not author:
-        return title
-    return f"{title} (di {author})"
+        return prefix + title
+    return f"{prefix}{title} (di {author})"
 
 
 def _audiobook_output_path(
@@ -1972,7 +1981,7 @@ def _remove_legacy_audiobook_paths(
     audiobook_dir: Path,
 ) -> None:
     legacy_paths = {
-        audiobook_dir / f"{_issue_folder_name(issue.title, issue.published_month)}.m4b",
+        audiobook_dir / f"{_issue_folder_name(issue.title, issue.issue_code)}.m4b",
     }
     for legacy_path in legacy_paths:
         if legacy_path == output_path:
@@ -2057,7 +2066,7 @@ def _progress_step(label: str) -> Iterator[None]:
     def spin() -> None:
         index = 0
         while not stop.is_set():
-            sys.stderr.write(f"\r{_indeterminate_bar(index)} {label}")
+            sys.stderr.write("\r\033[K" + _render_progress_line(label, index=index))
             sys.stderr.flush()
             index += 1
             time.sleep(0.1)
@@ -2087,8 +2096,6 @@ def _audio_progress_step(label: str) -> Iterator[Callable[[str, Path | None, int
             del path
             if event == "waiting_lock":
                 print("  queued: waiting for audio engine lock", file=sys.stderr, flush=True)
-            elif event == "aiff_growth" and size is not None:
-                print(f"  aiff: {_format_bytes(size)}", file=sys.stderr, flush=True)
             elif event == "chunking" and size is not None:
                 print(f"  chunks: {size}", file=sys.stderr, flush=True)
             elif event == "retrying" and size is not None:
@@ -2119,9 +2126,8 @@ def _audio_progress_step(label: str) -> Iterator[Callable[[str, Path | None, int
             event = str(state["event"])
             raw_size = state["size"]
             size = raw_size if isinstance(raw_size, int) else 0
-            line = f"{_indeterminate_bar(index)} {label}"
             detail = _audio_progress_detail(event, size, index=index)
-            sys.stderr.write(f"\r\033[K{line}\n\033[K{detail}\033[1A")
+            sys.stderr.write("\r\033[K" + _render_progress_line(label, detail=detail, index=index))
             sys.stderr.flush()
             index += 1
             time.sleep(0.1)
@@ -2144,16 +2150,32 @@ def _audio_progress_step(label: str) -> Iterator[Callable[[str, Path | None, int
 
 def _audio_progress_detail(event: str, size: int, *, index: int) -> str:
     if event == "waiting_lock":
-        return f"{_style_info('queued')} waiting for audio engine lock"
+        return "queued: waiting for audio engine lock"
     if event == "converting":
-        return f"{_style_info('convert')} final audio format"
+        return "convert: final audio format"
     if event == "chunking":
-        return f"{_style_info('chunks')} preparing {size} audio chunks"
+        return f"chunks: preparing {size} audio chunks"
     if event == "retrying":
-        return f"{_style_info('retry')} audio chunk attempt {size + 1}"
+        return f"retry: audio chunk attempt {size + 1}"
     if event in {"synthesizing", "aiff_growth"}:
         return f"{_byte_growth_bar(size, frame=index)} {_format_bytes(size)} AIFF written"
-    return f"{_style_muted('starting')} preparing audio engine"
+    return "starting: preparing audio engine"
+
+
+def _render_progress_line(label: str, *, index: int, detail: str | None = None) -> str:
+    prefix = f"{_indeterminate_bar(index)} "
+    available = max(8, _terminal_columns() - len(prefix))
+    if not detail:
+        return prefix + _truncate(label, width=available)
+    detail_width = max(12, min(len(detail), available // 2))
+    label_width = max(8, available - detail_width - 3)
+    rendered_label = _truncate(label, width=label_width)
+    rendered_detail = _truncate(detail, width=available - len(rendered_label) - 3)
+    return prefix + rendered_label + " · " + rendered_detail
+
+
+def _terminal_columns() -> int:
+    return shutil.get_terminal_size(fallback=(100, 20)).columns
 
 
 def _byte_growth_bar(size: int, *, frame: int, width: int = 18) -> str:
@@ -2236,7 +2258,7 @@ def _download_issue_article(
         article_link = _resolve_article_selector(issue.articles, article_selector)
     group_indexes = _group_indexes(issue.articles)
     group_name = article_link.group or "Articoli"
-    issue_dir = output_dir / _issue_folder_name(issue.title, issue.published_month)
+    issue_dir = output_dir / _issue_folder_name(issue.title, issue.issue_code)
     target_dir = (
         issue_dir
         / _group_folder_name(group_name, group_indexes[group_name])
@@ -2265,7 +2287,7 @@ def _download_issue_article(
         metadata_by_url={
             article_link.url: {
                 "issue_title": issue.title,
-                "issue_month": issue.published_month,
+                "issue_code": issue.issue_code,
                 "section": group_name,
                 "issue_author": article_link.author,
                 "order": article_link.order,
@@ -2302,7 +2324,7 @@ def _download_issue_articles(
         issue = client.discover_issue(issue_url)
 
     group_indexes = _group_indexes(issue.articles)
-    issue_dir = output_dir / _issue_folder_name(issue.title, issue.published_month)
+    issue_dir = output_dir / _issue_folder_name(issue.title, issue.issue_code)
     article_urls: list[str] = []
     issue_titles: dict[str, str] = {}
     target_dirs: dict[str, Path] = {}
@@ -2323,7 +2345,7 @@ def _download_issue_articles(
         target_dirs[article_link.url] = target_dir
         metadata_by_url[article_link.url] = {
             "issue_title": issue.title,
-            "issue_month": issue.published_month,
+            "issue_code": issue.issue_code,
             "section": group_name,
             "issue_author": article_link.author,
             "order": article_link.order,
@@ -2433,7 +2455,7 @@ def _download_new_articles(
                     audio_status="pending",
                     elapsed="00:00",
                     target_dir=existing_dir,
-                    verbose=True,
+                    verbose=config.verbose,
                 )
             continue
         article_started_at = time.monotonic()
@@ -2472,7 +2494,7 @@ def _download_new_articles(
             audio_status="pending" if create_audio else "off",
             elapsed=_format_duration(time.monotonic() - article_started_at),
             target_dir=target_dir,
-            verbose=True,
+            verbose=config.verbose,
         )
         next_index += 1
 
@@ -2498,7 +2520,10 @@ def _download_new_articles(
 
 
 def _print_feed_sync_header(output_dir: Path) -> None:
-    title = "La settimana di Domino"
+    _print_sync_header("La settimana di Domino", output_dir=output_dir)
+
+
+def _print_sync_header(title: str, *, output_dir: Path) -> None:
     print(title)
     print("=" * len(title))
     print(f"folder: {output_dir}")
@@ -2534,17 +2559,17 @@ def _handle_sync(
     issue_bundle_plans: list[IssueBundlePlan] = []
     selected_count = 0
 
+    _print_sync_header(config.magazine_title, output_dir=output_dir)
     for issue in issues:
         issue_detail = client.discover_issue(issue.url)
-        issue_dir = output_dir / _issue_folder_name(
-            issue_detail.title, issue_detail.published_month
-        )
+        issue_dir = output_dir / _issue_folder_name(issue_detail.title, issue_detail.issue_code)
         issue_article_dirs: list[Path] = []
         print(f"issue: {issue_detail.title}")
         group_indexes = _group_indexes(issue_detail.articles)
         for article_link in issue_detail.articles:
             if max_articles is not None and selected_count >= max_articles:
                 break
+            article_started_at = time.monotonic()
             existing_dir = _existing_article_dir(
                 manifest,
                 article_link.url,
@@ -2554,6 +2579,14 @@ def _handle_sync(
                 if create_audio:
                     audio_dirs.append(existing_dir)
                     selected_count += 1
+                    _print_download_result(
+                        article_link.title,
+                        export_status="reused",
+                        audio_status="pending",
+                        elapsed="00:00",
+                        target_dir=existing_dir,
+                        verbose=config.verbose,
+                    )
                 issue_article_dirs.append(existing_dir)
                 continue
             article = client.download_article(article_link.url)
@@ -2563,7 +2596,7 @@ def _handle_sync(
             group_dir = issue_dir / _group_folder_name(group_name, group_indexes[group_name])
             metadata: dict[str, object] = {
                 "issue_title": issue_detail.title,
-                "issue_month": issue_detail.published_month,
+                "issue_code": issue_detail.issue_code,
                 "section": group_name,
                 "order": article_link.order,
                 "published_date": article_link.published_date,
@@ -2593,7 +2626,14 @@ def _handle_sync(
             selected_count += 1
             if create_audio:
                 audio_dirs.append(target_dir)
-            print(f"  downloaded: {article.title}")
+            _print_download_result(
+                article.title,
+                export_status="written",
+                audio_status="pending" if create_audio else "off",
+                elapsed=_format_duration(time.monotonic() - article_started_at),
+                target_dir=target_dir,
+                verbose=config.verbose,
+            )
         if max_articles is not None and selected_count >= max_articles:
             cover_image_path = _ensure_issue_cover(
                 client, issue_detail, issue_dir=issue_dir, force=force
@@ -2667,8 +2707,8 @@ def _handle_sync(
     return audio_result
 
 
-def _issue_folder_name(title: str, published_month: str | None) -> str:
-    prefix = published_month or "unknown-month"
+def _issue_folder_name(title: str, issue_code: str | None) -> str:
+    prefix = issue_code or "unknown-issue"
     return f"{prefix}-{slugify(title, fallback='numero')}"
 
 
@@ -2831,6 +2871,7 @@ def _handle_rename_audiobooks(
         filename = render_audiobook_filename_from_tags(
             title=title,
             date=date,
+            issue_code=tags.get("grouping"),
             settings=filename_settings,
         )
         target_path = path.with_name(f"{filename}.m4b")
@@ -2897,7 +2938,11 @@ def _speak_paths(
 ) -> int:
     normalized_format = normalize_audio_format(audio_format)
     failures: list[AudioFailure] = []
+    print(_style_download_header())
     for raw_path in paths:
+        started_at = time.monotonic()
+        text_path = article_text_path(raw_path) if raw_path.is_dir() else raw_path
+        article_label = text_path.stem
         try:
             status, output_path = _ensure_audio(
                 raw_path,
@@ -2916,7 +2961,14 @@ def _speak_paths(
         except AudioError as exc:
             failures.append(AudioFailure(label=raw_path.name, target_dir=raw_path, error=str(exc)))
             continue
-        print(f"audio ({status}): {output_path}")
+        _print_download_result(
+            article_label,
+            export_status="off",
+            audio_status=status,
+            elapsed=_format_duration(time.monotonic() - started_at),
+            target_dir=output_path,
+            verbose=False,
+        )
     if failures:
         _print_audio_failures(failures)
         return 1

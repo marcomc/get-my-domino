@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Issue Audiobooks
 
 - Optional issue-level `.m4b` audiobook packaging for `download --issue
-  YYYY-MM --all --audiobook` and `sync-magazine --audiobook`, including chapter
+  YYYY-NN --all --audiobook` and `sync-magazine --audiobook`, including chapter
   markers from article order, embedded cover art, and issue metadata tags.
 - Issue-level `issue.json` sidecars that capture the issue URL, release date,
   cover image path, publisher tag, summary text, and per-article directory
@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added a clearer README disclaimer that this is an unofficial, unaffiliated,
   private-use accessibility/personal-reading tool for subscribers with lawful
   access, not a redistribution tool.
+- Fixed long-running audio progress rendering on interactive terminals so
+  `sync-feed`, `sync-magazine`, and other audio-generating commands reuse a
+  single progress line instead of cluttering the terminal with wrapped frames,
+  and aligned sync output to the same tabular status format used by downloads.
+- Issue audiobook chapter titles now include the article index from the issue
+  table of contents, and issue-level chapter sidecars now include the source
+  section name for each article.
 - Preferred naming config keys are now `magazine_title`,
   `filename_separator`, and `audiobook_name_format`, with the older
   `audiobook_filename_*` keys still accepted for backward compatibility.
@@ -71,10 +78,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Subscriber catalog browsing for available Domino magazine issues, issue
   contents, grouped sections, article order, and the recurring `La settimana di
   Domino` feed.
-- Human-readable catalog output with `YYYY-MM` issue codes, publication dates,
+- Human-readable catalog output with `YYYY-NN` issue codes, publication dates,
   issue summaries, grouped article trees, and optional feed listings.
-- Targeted downloads by article URL, by issue month plus article number, or by
-  complete issue with `download --issue YYYY-MM --all`.
+- Targeted downloads by article URL, by issue code plus article number, or by
+  complete issue with `download --issue YYYY-NN --all`.
 - Archive synchronization commands for magazine issues and feed articles,
   including legacy aliases for earlier command names.
 - Incremental local storage using manifests so existing article exports and

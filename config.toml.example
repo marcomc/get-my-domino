@@ -53,7 +53,7 @@ export_formats = ["html", "txt"]
 # spaces or punctuation with the configured filename_separator.
 magazine_title = "Domino"
 filename_separator = "-"
-audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}"
+audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
 
 # Authentication is read from this config file, not from browser extensions.
 # Fill these values in ~/.config/get-my-domino/config.toml.

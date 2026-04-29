@@ -298,7 +298,7 @@ def test_config_reads_preferred_audiobook_naming_keys(tmp_path: Path) -> None:
             [
                 'magazine_title = "Rivista Domino"',
                 'filename_separator = "."',
-                'audiobook_name_format = "{magazine}{sep}{year}{sep}{month}{sep}{title_slug}"',
+                'audiobook_name_format = "{magazine}{sep}{year}{sep}{number}{sep}{title_slug}"',
                 "",
             ]
         ),
@@ -309,7 +309,7 @@ def test_config_reads_preferred_audiobook_naming_keys(tmp_path: Path) -> None:
 
     assert config.magazine_title == "Rivista Domino"
     assert config.filename_separator == "."
-    assert config.audiobook_name_format == "{magazine}{sep}{year}{sep}{month}{sep}{title_slug}"
+    assert config.audiobook_name_format == "{magazine}{sep}{year}{sep}{number}{sep}{title_slug}"
 
 
 def test_config_derives_default_output_dir_from_collection_dir_name(tmp_path: Path) -> None:
@@ -582,7 +582,7 @@ def test_issue_articles_keep_month_groups_dates_and_order(tmp_path: Path) -> Non
     ).discover_issue(issue_url)
 
     assert issue.title == "Guaio persiano"
-    assert issue.published_month == "2026-04"
+    assert issue.issue_code == "2026-04"
     assert issue.cover_image_url == "https://cdn.example.test/guaio.jpg"
     assert issue.summary == "4/2026 La crisi spiegata"
     assert [
@@ -681,7 +681,7 @@ def test_catalog_expands_selected_issue_grouped_by_section(
     captured = capsys.readouterr()
     assert result == 0
     assert "Guaio persiano" in captured.out
-    assert "month: 2026-04" in captured.out
+    assert "issue: 2026-04" in captured.out
     assert "published: 2026-04-21" in captured.out
     assert "├── 01  L'Editoriale" in captured.out
     assert "│   └── 01  Editoriale" in captured.out
@@ -763,7 +763,7 @@ def test_catalog_rejects_numeric_issue_selector(tmp_path: Path) -> None:
             as_json=False,
         )
     except ValueError as exc:
-        assert "Use a YYYY-MM issue code" in str(exc)
+        assert "Use a YYYY-NN issue code" in str(exc)
     else:
         raise AssertionError("Expected numeric catalog selector to fail.")
 
@@ -1018,7 +1018,7 @@ def test_download_issue_all_can_package_issue_audiobook(
     assert packaged[0]["cover_image_path"] == (
         tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano" / "cover.jpg"
     )
-    assert packaged[0]["chapters"][0].title == "Editoriale (di Dario Fabbri)"
+    assert packaged[0]["chapters"][0].title == "01. Editoriale (di Dario Fabbri)"
     assert packaged[0]["chapters"][0].contributor == "Dario Fabbri"
     metadata = packaged[0]["metadata"]
     assert metadata is not None
@@ -1072,7 +1072,7 @@ def test_issue_audiobook_falls_back_to_legacy_audio_names(
             issue=Issue(
                 title="Guaio persiano",
                 url="https://example.test/issue",
-                published_month="2026-04",
+                issue_code="2026-04",
                 articles=[
                     Link(
                         title="Editoriale",
@@ -1158,9 +1158,11 @@ def test_refresh_issue_metadata_updates_article_and_issue_sidecars(
     issue_sidecar = json.loads((issue_dir / "issue.json").read_text(encoding="utf-8"))
     assert issue_sidecar["contributors"] == ["Lorenzo Maria Ricci"]
     assert issue_sidecar["articles"][0]["author"] == "Lorenzo Maria Ricci"
+    assert issue_sidecar["chapters"][0]["section"] == "La guerra va male"
     assert issue_sidecar["chapters"][0]["author"] == "Lorenzo Maria Ricci"
     issue_metadata = json.loads((issue_dir / "metadata.json").read_text(encoding="utf-8"))
     assert issue_metadata["articles"][0]["author"] == "Lorenzo Maria Ricci"
+    assert issue_metadata["chapters"][0]["section"] == "La guerra va male"
     assert issue_metadata["chapters"][0]["title"] == "E la Casa Bianca restò sola"
 
 
@@ -1229,7 +1231,7 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
     issue = Issue(
         title="Guaio persiano",
         url="https://example.test/issue",
-        published_month="2026-04",
+        issue_code="2026-04",
         articles=[],
     )
     plan = cli.IssueBundlePlan(
@@ -1297,7 +1299,7 @@ def test_audiobook_output_path_uses_configurable_filename_template() -> None:
     issue = Issue(
         title="Guaio persiano",
         url="https://example.test/issue",
-        published_month="2026-04",
+        issue_code="2026-04",
         articles=[],
     )
 
@@ -1307,7 +1309,7 @@ def test_audiobook_output_path_uses_configurable_filename_template() -> None:
         settings=AudiobookFilenameSettings(
             magazine_title="Rivista Domino",
             separator="-",
-            format_template="{magazine_slug}{sep}anno-{year}{sep}numero-{month}{sep}{title_slug}",
+            format_template="{magazine_slug}{sep}anno-{year}{sep}numero-{number}{sep}{title_slug}",
         ),
     )
 
@@ -1334,7 +1336,7 @@ def test_rename_audiobooks_uses_embedded_metadata(tmp_path: Path, monkeypatch: M
         filename_settings=AudiobookFilenameSettings(
             magazine_title="Domino",
             separator="-",
-            format_template="{magazine_slug}{sep}{year}{sep}{month}{sep}{title_slug}",
+            format_template="{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}",
         ),
         dry_run=False,
     )
@@ -1369,7 +1371,7 @@ def test_rename_audiobooks_allows_case_only_rename(
         filename_settings=AudiobookFilenameSettings(
             magazine_title="Domino",
             separator="-",
-            format_template="{magazine}{sep}{year}{sep}{month}{sep}{title_slug}",
+            format_template="{magazine}{sep}{year}{sep}{number}{sep}{title_slug}",
         ),
         dry_run=False,
     )
@@ -1394,7 +1396,7 @@ def test_resolved_issue_article_dirs_prefers_manifest_paths_for_legacy_issue_tre
     issue = Issue(
         title="Guaio persiano",
         url="https://example.test/issue",
-        published_month="2026-04",
+        issue_code="2026-04",
         articles=[
             Link(
                 title="Cosa fare a Teheran quando sei morto",
@@ -1767,11 +1769,11 @@ def test_main_help_explains_catalog_without_redundant_aliases() -> None:
 
 
 def test_catalog_title_cleanup_does_not_strip_europei() -> None:
-    month, title, synopsis = cli._issue_summary_parts(
+    issue_code, title, synopsis = cli._issue_summary_parts(
         "8/2025 Europei brava gente 7,50 € - 10,00 € Fascia di prezzo: da 7,50 € a 10,00 € Sinossi."
     )
 
-    assert month == "2025-08"
+    assert issue_code == "2025-08"
     assert title == "Europei brava gente"
     assert synopsis == "Sinossi."
 
@@ -1798,6 +1800,26 @@ def test_article_titles_do_not_style_when_color_is_disabled(monkeypatch: MonkeyP
     monkeypatch.setenv("NO_COLOR", "1")
 
     assert cli._style_article_title("Titolo") == "Titolo"
+
+
+def test_audio_progress_step_plain_output_suppresses_aiff_growth(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+
+    with cli._audio_progress_step("Generating audio article.m4a") as progress:
+        progress("chunking", None, 4)
+        progress("aiff_growth", None, 4096)
+        progress("retrying", None, 1)
+        progress("converting", None, None)
+
+    captured = capsys.readouterr()
+    assert "→ Generating audio article.m4a..." in captured.err
+    assert "chunks: 4" in captured.err
+    assert "retry: attempt 2" in captured.err
+    assert "converting: final audio format" in captured.err
+    assert "aiff:" not in captured.err
+    assert "✓ Generating audio article.m4a" in captured.err
 
 
 def test_folder_names_match_feed_and_issue_conventions() -> None:
@@ -2116,8 +2138,14 @@ def test_audiobook_request_defaults_to_config_and_allows_cli_override() -> None:
     sync_args = parser.parse_args(["sync-magazine"])
     assert cli._audiobook_requested(sync_args, config) is True
 
+    sync_no_audio_args = parser.parse_args(["sync-magazine", "--no-audio"])
+    assert cli._audiobook_requested(sync_no_audio_args, config) is False
+
     explicit_args = parser.parse_args(["sync-magazine", "--audiobook"])
     assert cli._audiobook_requested(explicit_args, AppConfig()) is True
+
+    explicit_no_audio_args = parser.parse_args(["sync-magazine", "--audiobook", "--no-audio"])
+    assert cli._audiobook_requested(explicit_no_audio_args, AppConfig()) is False
 
     download_args = parser.parse_args(
         [
@@ -2171,7 +2199,7 @@ def test_sync_feed_output_shows_destination_folder_and_article_paths(
 
     result = cli._download_new_articles(
         [Link(title="Che succede in Medio Oriente", url=article_url)],
-        config=AppConfig(output_dir=tmp_path),
+        config=AppConfig(output_dir=tmp_path, verbose=True),
         output_dir=tmp_path / "la-settimana-di-domino",
         create_audio=False,
         audio_format="m4a",
@@ -2222,7 +2250,7 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
 
     result = cli._download_new_articles(
         [Link(title="Che succede in Medio Oriente", url=article_url)],
-        config=AppConfig(output_dir=tmp_path),
+        config=AppConfig(output_dir=tmp_path, verbose=True),
         output_dir=output_dir,
         create_audio=True,
         audio_format="m4a",
@@ -2342,6 +2370,74 @@ def test_sync_feed_force_redownloads_and_forces_audio_regeneration(
     assert speak_kwargs[0]["force"] is True
 
 
+def test_sync_magazine_uses_tabular_output(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    issue_link = Link(title="4/2026 Guaio persiano", url="https://example.test/issue")
+    article_link = Link(
+        title="E la Casa Bianca restò sola",
+        url="https://example.test/article",
+        group="La guerra va male",
+        order=2,
+    )
+    issue = Issue(
+        title="Guaio persiano",
+        url=issue_link.url,
+        issue_code="2026-04",
+        articles=[article_link],
+    )
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            assert url == issue_link.url
+            return issue
+
+        def download_article(self, url: str) -> Article:
+            assert url == article_link.url
+            return Article(
+                title=article_link.title,
+                url=url,
+                html="<article><h1>E la Casa Bianca restò sola</h1><p>Corpo.</p></article>",
+                text="Corpo.",
+                author="Lorenzo Maria Ricci",
+            )
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_ensure_issue_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_write_issue_sidecar",
+        lambda *args, **kwargs: tmp_path / "exports" / "library" / "rivista" / "issue.json",
+    )
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", verbose=False, magazine_title="Domino"),
+        create_audio=False,
+        create_audiobook=False,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "Domino" in captured.out
+    assert "article" in captured.out
+    assert "issue: Guaio persiano" in captured.out
+    assert "written" in captured.out
+    assert "downloaded:" not in captured.out
+
+
 def test_audio_timeout_must_be_positive() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["download", "https://example.test/a", "--audio-timeout", "0"])
@@ -2425,6 +2521,20 @@ def test_indeterminate_bar_bounces_inside_width() -> None:
     assert cli._indeterminate_bar(14, width=10, chunk_width=3) == "[███       ]"
 
 
+def test_render_progress_line_truncates_long_label(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr("get_my_domino.cli._terminal_columns", lambda: 60)
+
+    line = cli._render_progress_line(
+        "Generating audio 2026-03-13-conflitto-in-medio-oriente-turchia-afghanistan-vs-pakistan",
+        index=0,
+        detail="convert: final audio format",
+    )
+
+    assert "\n" not in line
+    assert len(line) <= 60
+    assert "..." in line
+
+
 def test_speak_paths_uses_requested_audio_format(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
@@ -2456,6 +2566,8 @@ def test_speak_paths_uses_requested_audio_format(
         return output
 
     monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+    clock = iter([0.0, 12.0])
+    monkeypatch.setattr("get_my_domino.cli.time.monotonic", lambda: next(clock))
 
     result = cli._speak_paths(
         [text_path],
@@ -2476,7 +2588,11 @@ def test_speak_paths_uses_requested_audio_format(
         / "01-editoriale.mp3"
     )
     assert calls == [(text_path, audio_path, "Siri Voice 2", "mp3", 321.0)]
-    assert str(audio_path) in captured.out
+    assert "article" in captured.out
+    assert "01-editoriale" in captured.out
+    assert "off" in captured.out
+    assert "generated" in captured.out
+    assert "00:12" in captured.out
 
 
 def test_download_continues_after_audio_failure_and_reports_summary(

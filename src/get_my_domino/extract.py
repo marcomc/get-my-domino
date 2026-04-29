@@ -56,14 +56,14 @@ def article_date_from_url(url: str) -> str | None:
     return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
 
 
-def issue_month_from_text(value: str) -> str | None:
+def issue_code_from_text(value: str) -> str | None:
     match = re.search(r"\b(\d{1,2})/(\d{4})\b", value)
     if not match:
         return None
-    month = int(match.group(1))
-    if month < 1 or month > 12:
+    issue_number = int(match.group(1))
+    if issue_number < 1 or issue_number > 12:
         return None
-    return f"{match.group(2)}-{month:02d}"
+    return f"{match.group(2)}-{issue_number:02d}"
 
 
 def _clean_text(value: str) -> str:
