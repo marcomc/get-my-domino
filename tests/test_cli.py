@@ -3228,6 +3228,58 @@ def test_codex_speech_normalizer_uses_custom_prompt_file(
     assert prompts == [f"Write {source} to {output} using Titolo\n"]
 
 
+def test_codex_speech_normalizer_retries_timeout_then_succeeds(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    calls = 0
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, input, text, capture_output, timeout, check
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise subprocess.TimeoutExpired(["codex", "exec"], 123.0, stderr="temporary stall")
+        output.write_text("Titolo", encoding="utf-8")
+        return subprocess.CompletedProcess(["codex", "exec"], 0, stdout="done", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    result = speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            prompt_path=None,
+            diff=False,
+        ),
+    )
+
+    assert result == output
+    assert calls == 2
+    log_text = (tmp_path / "001-editoriale.speech.log").read_text(encoding="utf-8")
+    assert "attempt: 1/3" in log_text
+    assert "status: timeout after 123 seconds" in log_text
+    assert "temporary stall" in log_text
+    assert "attempt: 2/3" in log_text
+    assert "status: completed" in log_text
+
+
 def test_synthesize_mp3_uses_ffmpeg_after_say(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     text_path = tmp_path / "article.txt"
     text_path.write_text("Titolo", encoding="utf-8")

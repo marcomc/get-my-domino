@@ -14,6 +14,7 @@ from pathlib import Path
 
 SPEECH_PROMPT_VERSION = "2026-04-28.1"
 SUPPORTED_SPEECH_AGENTS = ("codex", "codex-cloud", "github-cli", "github-copilot", "jelly")
+CODEX_NORMALIZER_MAX_ATTEMPTS = 3
 
 
 class SpeechNormalizeError(RuntimeError):
@@ -130,35 +131,100 @@ def _run_codex_normalizer(
         command.extend(["-m", settings.model])
     command.append("-")
 
-    result = subprocess.run(
-        command,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        timeout=settings.timeout,
-        check=False,
+    attempts: list[str] = []
+    last_error: SpeechNormalizeError | None = None
+    for attempt in range(1, CODEX_NORMALIZER_MAX_ATTEMPTS + 1):
+        if output_path.exists():
+            output_path.unlink()
+        try:
+            result = subprocess.run(
+                command,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=settings.timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            attempts.append(
+                _codex_attempt_log(
+                    command=command,
+                    source_text_hash=_sha256_text(normalized_text),
+                    settings=settings,
+                    attempt=attempt,
+                    status=f"timeout after {settings.timeout:g} seconds",
+                    returncode=None,
+                    stdout=exc.stdout,
+                    stderr=exc.stderr,
+                )
+            )
+            last_error = SpeechNormalizeError(
+                f"codex normalizer timed out after {settings.timeout:g} seconds"
+            )
+            continue
+        attempts.append(
+            _codex_attempt_log(
+                command=command,
+                source_text_hash=_sha256_text(normalized_text),
+                settings=settings,
+                attempt=attempt,
+                status="completed",
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        )
+        if result.returncode == 0:
+            log_path.write_text("\n\n".join(attempts), encoding="utf-8")
+            return
+        last_error = SpeechNormalizeError(
+            f"codex normalizer failed with exit code {result.returncode}"
+        )
+    log_path.write_text("\n\n".join(attempts), encoding="utf-8")
+    if last_error is not None:
+        raise last_error
+    raise SpeechNormalizeError("codex normalizer failed without returning a result")
+
+
+def _codex_attempt_log(
+    *,
+    command: list[str],
+    source_text_hash: str,
+    settings: SpeechNormalizeSettings,
+    attempt: int,
+    status: str,
+    returncode: int | None,
+    stdout: str | bytes | None,
+    stderr: str | bytes | None,
+) -> str:
+    stdout_text = _decode_subprocess_output(stdout)
+    stderr_text = _decode_subprocess_output(stderr)
+    return "\n".join(
+        [
+            f"timestamp: {datetime.now(UTC).isoformat(timespec='seconds')}",
+            f"agent: {settings.agent}",
+            f"attempt: {attempt}/{CODEX_NORMALIZER_MAX_ATTEMPTS}",
+            f"status: {status}",
+            f"command: {' '.join(command)}",
+            f"prompt_path: {settings.prompt_path or 'packaged default'}",
+            f"source_sha256: {source_text_hash}",
+            f"returncode: {returncode if returncode is not None else 'timeout'}",
+            "",
+            "stdout:",
+            stdout_text,
+            "",
+            "stderr:",
+            stderr_text,
+        ]
     )
-    log_path.write_text(
-        "\n".join(
-            [
-                f"timestamp: {datetime.now(UTC).isoformat(timespec='seconds')}",
-                f"agent: {settings.agent}",
-                f"command: {' '.join(command)}",
-                f"prompt_path: {settings.prompt_path or 'packaged default'}",
-                f"source_sha256: {_sha256_text(normalized_text)}",
-                f"returncode: {result.returncode}",
-                "",
-                "stdout:",
-                result.stdout,
-                "",
-                "stderr:",
-                result.stderr,
-            ]
-        ),
-        encoding="utf-8",
-    )
-    if result.returncode != 0:
-        raise SpeechNormalizeError(f"codex normalizer failed with exit code {result.returncode}")
+
+
+def _decode_subprocess_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _codex_prompt(
