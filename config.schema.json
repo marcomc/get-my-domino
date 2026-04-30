@@ -4,15 +4,6 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "app_name": {
-      "type": "string",
-      "default": "get-my-domino"
-    },
-    "default_output": {
-      "type": "string",
-      "enum": ["text", "json"],
-      "default": "text"
-    },
     "verbose": {
       "type": "boolean",
       "default": false

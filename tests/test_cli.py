@@ -141,8 +141,6 @@ def test_info_command_reads_config_file(tmp_path: Path, capsys: CaptureFixture[s
     config_path.write_text(
         "\n".join(
             [
-                'app_name = "Example App"',
-                'default_output = "json"',
                 "verbose = false",
                 'auth_username = "reader@example.test"',
                 'auth_password = "secret"',
@@ -157,8 +155,6 @@ def test_info_command_reads_config_file(tmp_path: Path, capsys: CaptureFixture[s
     captured = capsys.readouterr()
 
     assert result == 0
-    assert "app_name: Example App" in captured.out
-    assert "default_output: json" in captured.out
     assert f"config_path: {config_path}" in captured.out
     assert "auth_username: reader@example.test" in captured.out
     assert "auth_password: configured" in captured.out
@@ -184,7 +180,7 @@ def test_info_command_reports_missing_auth_username(
 
 def test_info_command_can_emit_json(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text('app_name = "Example App"\n', encoding="utf-8")
+    config_path.write_text("verbose = true\n", encoding="utf-8")
 
     result = cli.main(["--config", str(config_path), "info", "--json"])
 
@@ -194,7 +190,7 @@ def test_info_command_can_emit_json(tmp_path: Path, capsys: CaptureFixture[str])
     payload = json.loads(captured.out)
     assert payload["project_name"] == "get-my-domino"
     assert payload["cli_name"] == "get-my-domino"
-    assert payload["config"]["app_name"] == "Example App"
+    assert payload["config"]["verbose"] is True
 
 
 def test_info_json_redacts_auth_password(tmp_path: Path, capsys: CaptureFixture[str]) -> None:

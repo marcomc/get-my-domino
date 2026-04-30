@@ -1198,8 +1198,6 @@ def _handle_info(config: AppConfig, config_path: Path, as_json: bool) -> int:
     print(f"version: {payload['version']}")
     print(f"config_path: {payload['config_path']}")
     print(f"config_exists: {payload['config_exists']}")
-    print(f"app_name: {config.app_name}")
-    print(f"default_output: {config.default_output}")
     print(f"verbose: {config.verbose}")
     print(f"magazine_index_url: {config.magazine_index_url}")
     print(f"output_parent_dir: {config.output_parent_dir}")

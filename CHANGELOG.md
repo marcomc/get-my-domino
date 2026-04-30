@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reorganized the config templates into a slimmer user-facing
   `config.toml.example` and a complete `config.full.toml` reference file for
   advanced overrides and site-maintenance knobs.
+- Removed the inert `app_name` and `default_output` keys from the supported
+  config surface because they did not affect runtime behavior.
 
 ## [0.1.1] - 2026-04-30
 

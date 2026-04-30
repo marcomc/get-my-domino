@@ -32,8 +32,6 @@ DEFAULT_USER_AGENT = f"get-my-domino/{__version__}"
 
 @dataclass(frozen=True)
 class AppConfig:
-    app_name: str = "get-my-domino"
-    default_output: str = "text"
     verbose: bool = False
     base_url: str = "https://www.rivistadomino.it/"
     magazine_index_url: str = "https://www.rivistadomino.it/mio-account/my_domino/"
@@ -160,8 +158,6 @@ def load_config(path: Path) -> AppConfig:
         else output_parent_dir / collection_dir_name
     )
     return AppConfig(
-        app_name=str(data.get("app_name", "get-my-domino")),
-        default_output=str(data.get("default_output", "text")),
         verbose=bool(data.get("verbose", False)),
         base_url=str(data.get("base_url", "https://www.rivistadomino.it/")),
         magazine_index_url=str(

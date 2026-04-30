@@ -9,8 +9,6 @@
 # instead.
 
 # General
-app_name = "get-my-domino"
-default_output = "text"
 verbose = false
 
 # Output Paths
