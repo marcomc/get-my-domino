@@ -137,6 +137,15 @@ def _string_tuple(data: dict[str, Any], key: str, default: tuple[str, ...]) -> t
     raise ValueError(f"Config key {key!r} must be a string or list of strings.")
 
 
+def _optional_path(value: object) -> Path | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    return Path(normalized).expanduser()
+
+
 def load_config(path: Path) -> AppConfig:
     data = _read_toml(path)
     magazine_title = str(
@@ -177,11 +186,7 @@ def load_config(path: Path) -> AppConfig:
         output_parent_dir=output_parent_dir,
         collection_dir_name=collection_dir_name,
         output_dir=output_dir,
-        audiobook_output_dir=(
-            Path(str(data["audiobook_output_dir"])).expanduser()
-            if data.get("audiobook_output_dir") is not None
-            else None
-        ),
+        audiobook_output_dir=_optional_path(data.get("audiobook_output_dir")),
         feed_index_url=str(
             data.get(
                 "feed_index_url",

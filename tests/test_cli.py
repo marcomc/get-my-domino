@@ -393,6 +393,27 @@ def test_config_supports_external_audiobook_output_dir(tmp_path: Path) -> None:
     assert config.audiobooks_dir == Path.home() / "Audiobooks" / "Rivista Domino"
 
 
+def test_config_treats_empty_audiobook_output_dir_as_unset(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_parent_dir = "{tmp_path}"',
+                'collection_dir_name = "rivista_domino"',
+                'audiobook_output_dir = ""',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.output_dir == tmp_path / "rivista_domino"
+    assert config.audiobook_output_dir is None
+    assert config.audiobooks_dir == tmp_path / "rivista_domino" / "audiobooks"
+
+
 def test_config_reads_legacy_audiobook_naming_keys(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
