@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   using `output_dir/audiobooks/`.
 - Removed `user_agent` from the documented user config surface and now derive
   the HTTP `User-Agent` header automatically from the installed app version.
+- Reorganized the config templates into a slimmer user-facing
+  `config.toml.example` and a complete `config.full.toml` reference file for
+  advanced overrides and site-maintenance knobs.
 
 ## [0.1.1] - 2026-04-30
 

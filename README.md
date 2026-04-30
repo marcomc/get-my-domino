@@ -149,54 +149,41 @@ The CLI reads optional config from:
 Start from the example file in this repository:
 
 - [config.toml.example](config.toml.example)
+- [config.full.toml](config.full.toml)
 - [config.schema.json](config.schema.json)
+
+`config.toml.example` is the recommended user template. It keeps only the
+settings most readers are likely to change.
+
+`config.full.toml` is a complete reference file with every supported key,
+including advanced site-override and maintenance knobs. It is not loaded
+automatically by the CLI. The runtime still reads one config file at a time,
+normally `~/.config/get-my-domino/config.toml`.
 
 Example:
 
 ```toml
-app_name = "get-my-domino"
-default_output = "text"
 verbose = false
-base_url = "https://www.rivistadomino.it/"
-magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
 output_parent_dir = "~/Documents"
 collection_dir_name = "domino"
 # output_dir = "~/Documents/domino"
 # audiobook_output_dir = "~/Audiobooks/Domino"
-feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
 feed_folder_name = "la-settimana-di-domino"
+export_formats = ["html", "txt"]
+siri_voice = ""
 audio_auto = false
 audiobook_auto = false
 audio_format = "m4a"
-audio_timeout = 900
-audio_chunked = true
-audio_chunk_chars = 2500
-audio_chunk_concurrency = 3
-audio_chunk_retries = 2
-audio_stall_timeout = 45
 speech_normalize_auto = false
-speech_normalize_agent = "codex"
 speech_normalize_command = "codex"
 speech_normalize_model = ""
-speech_normalize_timeout = 900
-speech_normalize_force = false
-speech_normalize_fallback = false
 speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
-export_formats = ["html", "txt"]
-siri_voice = ""
-auth_login_url = "https://www.rivistadomino.it/mio-account/"
+magazine_title = "Domino"
+filename_separator = "-"
+audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
 auth_username = ""
 auth_password = ""
-auth_username_field = "username"
-auth_password_field = "password"
-auth_submit_field = "login"
-auth_submit_value = "Accedi"
 auth_session_path = "~/.config/get-my-domino/session.json"
-auth_browser_timeout = 300
-issue_link_patterns = ["?sfoglia=1"]
-article_link_patterns = ["/blog/20"]
-feed_article_link_patterns = ["/blog/20"]
-content_selectors = ["article", "main", ".entry-content"]
 ```
 
 Authentication can use either a saved session or TOML credentials. Run
@@ -212,6 +199,17 @@ and revalidates them against `mio-account`.
 
 Issue discovery starts from the subscriber `my_domino` page and keeps
 `?sfoglia=1` links so article discovery can reach the private issue contents.
+
+Most users should never need to touch the advanced site-override keys such as:
+
+- `content_selectors`
+- `issue_link_patterns`
+- `article_link_patterns`
+- `feed_article_link_patterns`
+- `auth_submit_field`
+- `auth_submit_value`
+
+Those exist mainly as recovery knobs if the site markup or login form changes.
 
 ## Usage
 
@@ -746,6 +744,7 @@ get-my-domino --config ./config.toml info --json
 ├── Makefile
 ├── README.md
 ├── TODO.md
+├── config.full.toml
 ├── config.toml.example
 ├── pyproject.toml
 ├── scripts/

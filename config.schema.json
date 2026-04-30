@@ -25,9 +25,17 @@
       "type": "string",
       "default": "https://www.rivistadomino.it/mio-account/my_domino/"
     },
+    "output_parent_dir": {
+      "type": "string",
+      "default": "~/Documents"
+    },
+    "collection_dir_name": {
+      "type": "string",
+      "default": "domino"
+    },
     "output_dir": {
       "type": "string",
-      "default": "~/Documents/rivistadomino"
+      "default": "~/Documents/domino"
     },
     "audiobook_output_dir": {
       "type": "string",
@@ -86,6 +94,10 @@
       "default": ""
     },
     "audio_auto": {
+      "type": "boolean",
+      "default": false
+    },
+    "audiobook_auto": {
       "type": "boolean",
       "default": false
     },
@@ -156,6 +168,19 @@
     "speech_normalize_prompt_path": {
       "type": "string",
       "default": "~/.config/get-my-domino/speech-normalize-codex.txt"
+    },
+    "magazine_title": {
+      "type": "string",
+      "default": "Domino"
+    },
+    "filename_separator": {
+      "type": "string",
+      "enum": ["-", "_", "."],
+      "default": "-"
+    },
+    "audiobook_name_format": {
+      "type": "string",
+      "default": "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
     },
     "export_formats": {
       "oneOf": [
