@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-30
+
 ### Changed
 
 - Added a dedicated `audiobook_output_dir` config key so packaged `.m4b`
