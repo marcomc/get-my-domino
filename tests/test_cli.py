@@ -115,6 +115,45 @@ def test_unknown_command_prints_friendly_suggestion(capsys: CaptureFixture[str])
     assert "choose from" not in captured.err
 
 
+def test_main_download_issue_all_dispatches_to_issue_downloader(monkeypatch: MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(cli, "_ensure_storage_layout", lambda root_output_dir, config: None)
+
+    def fake_download_issue_articles(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_download_issue_articles", fake_download_issue_articles)
+
+    result = cli.main(["download", "--issue", "2026-04", "--all"])
+
+    assert result == 0
+    assert len(calls) == 1
+    assert calls[0]["issue_selector"] == "2026-04"
+
+
+def test_main_download_issue_article_dispatches_to_issue_article_downloader(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(cli, "_ensure_storage_layout", lambda root_output_dir, config: None)
+
+    def fake_download_issue_article(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_download_issue_article", fake_download_issue_article)
+
+    result = cli.main(["download", "--issue", "2026-04", "--article", "1"])
+
+    assert result == 0
+    assert len(calls) == 1
+    assert calls[0]["issue_selector"] == "2026-04"
+    assert calls[0]["article_selector"] == "1"
+
+
 def test_main_help_mentions_refresh_and_repackage_commands(capsys: CaptureFixture[str]) -> None:
     result = cli.main([])
 
