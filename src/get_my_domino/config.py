@@ -47,6 +47,7 @@ class AppConfig:
     output_parent_dir: Path = DEFAULT_OUTPUT_PARENT_DIR
     collection_dir_name: str = "domino"
     output_dir: Path = DEFAULT_OUTPUT_PARENT_DIR / "domino"
+    audiobook_output_dir: Path | None = None
     feed_index_url: str = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
     feed_folder_name: str = "la-settimana-di-domino"
     request_timeout: float = 30.0
@@ -109,7 +110,7 @@ class AppConfig:
 
     @property
     def audiobooks_dir(self) -> Path:
-        return self.output_dir / "audiobooks"
+        return self.audiobook_output_dir or (self.output_dir / "audiobooks")
 
     def with_cli_overrides(self, *, verbose: bool) -> "AppConfig":
         if not verbose:
@@ -178,6 +179,11 @@ def load_config(path: Path) -> AppConfig:
         output_parent_dir=output_parent_dir,
         collection_dir_name=collection_dir_name,
         output_dir=output_dir,
+        audiobook_output_dir=(
+            Path(str(data["audiobook_output_dir"])).expanduser()
+            if data.get("audiobook_output_dir") is not None
+            else None
+        ),
         feed_index_url=str(
             data.get(
                 "feed_index_url",

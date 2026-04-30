@@ -29,6 +29,10 @@
       "type": "string",
       "default": "~/Documents/rivistadomino"
     },
+    "audiobook_output_dir": {
+      "type": "string",
+      "description": "Optional external directory for packaged .m4b files. Defaults to output_dir/audiobooks."
+    },
     "feed_index_url": {
       "type": "string",
       "default": "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"

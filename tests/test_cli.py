@@ -247,6 +247,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
             [
                 "audio_auto = true",
                 "audiobook_auto = true",
+                'audiobook_output_dir = "~/Audiobooks/Domino"',
                 'audio_format = "mp4a"',
                 "audio_timeout = 123",
                 "audio_chunked = false",
@@ -273,6 +274,8 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
 
     assert config.audio_auto is True
     assert config.audiobook_auto is True
+    assert config.audiobook_output_dir == Path.home() / "Audiobooks" / "Domino"
+    assert config.audiobooks_dir == Path.home() / "Audiobooks" / "Domino"
     assert config.audio_format == "m4a"
     assert config.audio_timeout == 123.0
     assert config.audio_chunked is False
@@ -331,6 +334,28 @@ def test_config_derives_default_output_dir_from_collection_dir_name(tmp_path: Pa
     assert config.output_parent_dir == tmp_path
     assert config.collection_dir_name == "rivista_domino"
     assert config.output_dir == tmp_path / "rivista_domino"
+    assert config.audiobooks_dir == tmp_path / "rivista_domino" / "audiobooks"
+
+
+def test_config_supports_external_audiobook_output_dir(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_parent_dir = "{tmp_path}"',
+                'collection_dir_name = "rivista_domino"',
+                'audiobook_output_dir = "~/Audiobooks/Rivista Domino"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.output_dir == tmp_path / "rivista_domino"
+    assert config.audiobook_output_dir == Path.home() / "Audiobooks" / "Rivista Domino"
+    assert config.audiobooks_dir == Path.home() / "Audiobooks" / "Rivista Domino"
 
 
 def test_config_reads_legacy_audiobook_naming_keys(tmp_path: Path) -> None:
@@ -1141,11 +1166,65 @@ def test_issue_audiobook_falls_back_to_legacy_audio_names(
             article_dirs=[article_dir],
         ),
         root_output_dir=output_dir,
+        config=AppConfig(output_dir=output_dir),
         cover_image_path=None,
         filename_settings=AudiobookFilenameSettings(),
     )
 
     assert packaged[0]["chapters"][0].audio_path == article_dir / "01-editoriale.m4a"
+
+
+def test_issue_audiobook_uses_external_audiobook_output_dir(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    external_audiobook_dir = tmp_path / "books"
+    issue_dir = output_dir / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-l-editoriale" / "01-editoriale"
+    article_dir.mkdir(parents=True)
+    (article_dir / "01-editoriale.m4a").write_bytes(b"audio")
+    built_paths: list[Path] = []
+
+    def fake_build_m4b(
+        output_path: Path,
+        *,
+        title: str,
+        chapters: list[object],
+        cover_image_path: Path | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Path:
+        del title, chapters, cover_image_path, metadata
+        built_paths.append(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("book", encoding="utf-8")
+        return output_path
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    cli._build_issue_audiobook(
+        cli.IssueBundlePlan(
+            issue=Issue(
+                title="Guaio persiano",
+                url="https://example.test/issue",
+                issue_code="2026-04",
+                articles=[
+                    Link(
+                        title="Editoriale",
+                        url="https://example.test/article",
+                        order=1,
+                    )
+                ],
+            ),
+            issue_dir=issue_dir,
+            article_dirs=[article_dir],
+        ),
+        root_output_dir=output_dir,
+        config=AppConfig(output_dir=output_dir, audiobook_output_dir=external_audiobook_dir),
+        cover_image_path=None,
+        filename_settings=AudiobookFilenameSettings(),
+    )
+
+    assert built_paths == [external_audiobook_dir / "domino-2026-04-guaio-persiano.m4b"]
 
 
 def test_legacy_audio_output_path_uses_root_audio_for_feed_articles(tmp_path: Path) -> None:
@@ -1339,10 +1418,11 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
         packaged_plan: cli.IssueBundlePlan,
         *,
         root_output_dir: Path,
+        config: AppConfig,
         cover_image_path: Path | None,
         filename_settings: AudiobookFilenameSettings,
     ) -> Path:
-        del packaged_plan, root_output_dir, cover_image_path, filename_settings
+        del packaged_plan, root_output_dir, config, cover_image_path, filename_settings
         events.append("package")
         return tmp_path / "exports" / "audiobooks" / "2026-04-guaio-persiano.m4b"
 
@@ -1475,10 +1555,11 @@ def test_repackage_audiobook_all_uses_only_downloaded_issues(
         plan: cli.IssueBundlePlan,
         *,
         root_output_dir: Path,
+        config: AppConfig,
         cover_image_path: Path | None,
         filename_settings: AudiobookFilenameSettings,
     ) -> Path:
-        del root_output_dir, cover_image_path, filename_settings
+        del root_output_dir, config, cover_image_path, filename_settings
         packaged.append(plan.issue.issue_code or "")
         return issue_dir / "book.m4b"
 

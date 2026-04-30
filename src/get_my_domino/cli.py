@@ -719,18 +719,29 @@ def _feed_output_dir(root_output_dir: Path, config: AppConfig) -> Path:
     return _library_dir(root_output_dir) / config.feed_folder_name
 
 
-def _audiobooks_dir(root_output_dir: Path) -> Path:
-    return root_output_dir / "audiobooks"
+def _audiobooks_dir(root_output_dir: Path, config: AppConfig) -> Path:
+    del root_output_dir
+    return config.audiobooks_dir
 
 
 def _ensure_storage_layout(root_output_dir: Path, config: AppConfig) -> None:
     library_dir = _library_dir(root_output_dir)
     magazine_dir = _magazine_output_dir(root_output_dir)
     weekly_dir = _feed_output_dir(root_output_dir, config)
+    audiobook_dir = _audiobooks_dir(root_output_dir, config)
+    legacy_audiobook_dir = root_output_dir / "audiobooks"
     library_dir.mkdir(parents=True, exist_ok=True)
     magazine_dir.mkdir(parents=True, exist_ok=True)
     weekly_dir.mkdir(parents=True, exist_ok=True)
-    _audiobooks_dir(root_output_dir).mkdir(parents=True, exist_ok=True)
+
+    if (
+        audiobook_dir != legacy_audiobook_dir
+        and legacy_audiobook_dir.exists()
+        and not audiobook_dir.exists()
+    ):
+        audiobook_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy_audiobook_dir), str(audiobook_dir))
+    audiobook_dir.mkdir(parents=True, exist_ok=True)
 
     legacy_manifest = root_output_dir / "manifest.json"
     if legacy_manifest.exists():
@@ -1876,10 +1887,11 @@ def _build_issue_audiobook(
     plan: IssueBundlePlan,
     *,
     root_output_dir: Path,
+    config: AppConfig,
     cover_image_path: Path | None,
     filename_settings: AudiobookFilenameSettings,
 ) -> Path:
-    audiobook_dir = _audiobooks_dir(root_output_dir)
+    audiobook_dir = _audiobooks_dir(root_output_dir, config)
     output_path = _audiobook_output_path(
         audiobook_dir,
         plan.issue,
@@ -2409,6 +2421,7 @@ def _download_issue_articles(
                 article_dirs=resolved_article_dirs,
             ),
             root_output_dir=root_output_dir,
+            config=config,
             cover_image_path=cover_image_path,
             filename_settings=(
                 audiobook_filename_settings or _configured_audiobook_filename_settings(config)
@@ -2715,6 +2728,7 @@ def _handle_sync(
                 _build_issue_audiobook(
                     plan,
                     root_output_dir=root_output_dir,
+                    config=config,
                     filename_settings=(
                         audiobook_filename_settings
                         or _configured_audiobook_filename_settings(config)
@@ -2840,6 +2854,7 @@ def _handle_repackage_audiobook(
             _build_issue_audiobook(
                 plan,
                 root_output_dir=root_output_dir,
+                config=config,
                 cover_image_path=cover_image_path,
                 filename_settings=filename_settings,
             )

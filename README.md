@@ -162,6 +162,7 @@ magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
 output_parent_dir = "~/Documents"
 collection_dir_name = "domino"
 # output_dir = "~/Documents/domino"
+# audiobook_output_dir = "~/Audiobooks/Domino"
 feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
 feed_folder_name = "la-settimana-di-domino"
 audio_auto = false
@@ -282,9 +283,10 @@ articles. `sync-feed` does the same for `La settimana di Domino`.
 
 When you add `--audiobook` to `download --issue YYYY-NN --all` or to
 `sync-magazine`, the CLI also packages each complete magazine issue as one
-chapterized `.m4b` file under `output_dir/audiobooks/`. The package reuses the
-ordered per-article `.m4a` files as audiobook chapters, embeds the issue cover
-image when available, and writes issue-level metadata sidecars as
+chapterized `.m4b` file under `config.audiobooks_dir`, which defaults to
+`output_dir/audiobooks/` unless you set `audiobook_output_dir`. The package
+reuses the ordered per-article `.m4a` files as audiobook chapters, embeds the
+issue cover image when available, and writes issue-level metadata sidecars as
 `<issue-folder>/issue.json`. If you set `audiobook_auto = true` in the config,
 the same packaging also happens automatically for `sync-magazine` and for full
 issue downloads via `download --issue YYYY-NN --all`.
@@ -376,6 +378,15 @@ Older keys such as `audiobook_filename_magazine_title`,
 `audiobook_filename_separator`, and `audiobook_filename_format` are still
 accepted for backward compatibility, but the names above are now the preferred
 ones.
+
+If your `.m4b` library lives elsewhere, set for example:
+
+```toml
+audiobook_output_dir = "~/Audiobooks/Domino"
+```
+
+That redirects only the packaged audiobook destination. Article exports,
+issue metadata, and per-article audio still remain under `output_dir/library`.
 
 Available filename fields:
 
@@ -527,6 +538,9 @@ output_dir/
             └── 02-la-guerra-va-male/
                 └── 02-e-la-casa-bianca-rest-sola/
 ```
+
+If `audiobook_output_dir` is configured, replace the top-level `audiobooks/`
+entry above with that external path.
 
 Single-article audio now lives beside the article exports and metadata, so the
 old top-level `output_dir/audio/` tree is no longer the canonical layout.
@@ -802,3 +816,8 @@ output_parent_dir/collection_dir_name
 `collection_dir_name` is intended to be a filesystem slug. By default it is
 derived from `magazine_title` in lowercase with underscores, for example
 `"Rivista Domino"` -> `rivista_domino`.
+
+Audiobooks use a separate destination resolver:
+
+- by default: `output_dir/audiobooks`
+- if set explicitly: `audiobook_output_dir`

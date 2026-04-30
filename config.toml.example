@@ -11,10 +11,13 @@ output_parent_dir = "~/Documents"
 # output_parent_dir/collection_dir_name.
 collection_dir_name = "domino"
 # output_dir = "~/Documents/domino"
+# Leave unset to keep issue audiobooks under output_dir/audiobooks.
+# Set this when your .m4b library lives elsewhere.
+# audiobook_output_dir = "~/Audiobooks/Domino"
 feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
 feed_folder_name = "la-settimana-di-domino"
 request_timeout = 30
-user_agent = "get-my-domino/0.1.0"
+user_agent = "get-my-domino/0.1.1"
 # Leave empty to call macOS `say` without `-v`, so it uses the System Voice
 # selected in System Settings > Accessibility > Spoken Content.
 # Set only to a voice listed by `get-my-domino voices` when you want to force
