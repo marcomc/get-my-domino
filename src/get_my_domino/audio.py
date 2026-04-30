@@ -13,6 +13,9 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import (
+    CancelledError as FutureCancelledError,
+)
+from concurrent.futures import (
     Future,
     ThreadPoolExecutor,
     as_completed,
@@ -423,6 +426,7 @@ def _wait_for_chunk_futures(futures: dict[Future[None], Path]) -> None:
             AudioError,
             subprocess.CalledProcessError,
             subprocess.TimeoutExpired,
+            FutureCancelledError,
             FutureTimeoutError,
         ):
             continue

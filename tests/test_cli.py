@@ -5,6 +5,7 @@ import fcntl
 import json
 import subprocess
 import sys
+from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -3642,9 +3643,38 @@ class FakeStuckFuture:
         raise TimeoutError
 
 
+class FakeCancelledFuture(FakeStuckFuture):
+    def result(self, timeout: float | None = None) -> None:
+        del timeout
+        raise FutureCancelledError
+
+
 def test_wait_for_chunk_futures_ignores_future_timeout() -> None:
     future = cast(Future[None], FakeStuckFuture())
     audio_module._wait_for_chunk_futures({future: Path("chunk-001.aiff")})
+
+
+def test_wait_for_chunk_futures_ignores_future_cancellation() -> None:
+    future = cast(Future[None], FakeCancelledFuture())
+    audio_module._wait_for_chunk_futures({future: Path("chunk-001.aiff")})
+
+
+def test_ensure_storage_layout_skips_self_nested_audiobook_migration(tmp_path: Path) -> None:
+    output_dir = tmp_path / "exports"
+    legacy_audiobook_dir = output_dir / "audiobooks"
+    nested_audiobook_dir = legacy_audiobook_dir / "external"
+    legacy_audiobook_dir.mkdir(parents=True)
+    (legacy_audiobook_dir / "legacy-book.m4b").write_text("book", encoding="utf-8")
+
+    cli._ensure_storage_layout(
+        output_dir,
+        AppConfig(output_dir=output_dir, audiobook_output_dir=nested_audiobook_dir),
+    )
+
+    assert legacy_audiobook_dir.exists()
+    assert (legacy_audiobook_dir / "legacy-book.m4b").exists()
+    assert nested_audiobook_dir.exists()
+    assert not (nested_audiobook_dir / "legacy-book.m4b").exists()
 
 
 def test_synthesize_audio_times_out_and_removes_temporary_aiff(

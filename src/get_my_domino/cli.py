@@ -738,6 +738,7 @@ def _ensure_storage_layout(root_output_dir: Path, config: AppConfig) -> None:
         audiobook_dir != legacy_audiobook_dir
         and legacy_audiobook_dir.exists()
         and not audiobook_dir.exists()
+        and not audiobook_dir.is_relative_to(legacy_audiobook_dir)
     ):
         audiobook_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(legacy_audiobook_dir), str(audiobook_dir))
