@@ -12,10 +12,11 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 
 SUPPORTED_AUDIO_FORMATS = ("m4a", "mp3")
 AudioProgressCallback = Callable[[str, Path | None, int | None], None]
@@ -23,6 +24,10 @@ AudioProgressCallback = Callable[[str, Path | None, int | None], None]
 
 class AudioError(RuntimeError):
     """Raised when local speech synthesis fails."""
+
+
+class _AudioInterrupted(RuntimeError):
+    """Internal cancellation used to stop sibling chunk workers cleanly."""
 
 
 @dataclass(frozen=True)
@@ -155,6 +160,7 @@ def _run_interruptible(
     stall_timeout: float | None = None,
     monitor_path: Path | None = None,
     progress: AudioProgressCallback | None = None,
+    stop_event: Event | None = None,
 ) -> None:
     process = subprocess.Popen(command)
     started_at = time.monotonic()
@@ -162,6 +168,8 @@ def _run_interruptible(
     last_growth_at = started_at
     try:
         while True:
+            if stop_event is not None and stop_event.is_set():
+                raise _AudioInterrupted
             try:
                 return_code = process.wait(timeout=0.5)
                 break
@@ -180,7 +188,17 @@ def _run_interruptible(
                     and time.monotonic() - last_growth_at >= stall_timeout
                 ):
                     raise subprocess.TimeoutExpired(command, stall_timeout) from None
+    except _AudioInterrupted:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
     except KeyboardInterrupt:
+        if stop_event is not None:
+            stop_event.set()
         process.terminate()
         try:
             process.wait(timeout=5)
@@ -304,23 +322,38 @@ def _synthesize_chunked_aiff(
 
         max_workers = min(max(1, concurrency), len(chunk_paths))
         progress and progress("chunking", combined_aiff_path, len(chunk_paths))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    _synthesize_one_chunk,
-                    say,
-                    chunk_path,
-                    aiff_path,
-                    voice=voice,
-                    timeout=timeout,
-                    progress=progress,
-                    retries=retries,
-                    stall_timeout=stall_timeout,
-                ): aiff_path
-                for chunk_path, aiff_path in zip(chunk_paths, aiff_paths, strict=True)
-            }
+        stop_event = Event()
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        futures = {
+            executor.submit(
+                _synthesize_one_chunk,
+                say,
+                chunk_path,
+                aiff_path,
+                voice=voice,
+                timeout=timeout,
+                progress=progress,
+                retries=retries,
+                stall_timeout=stall_timeout,
+                stop_event=stop_event,
+            ): aiff_path
+            for chunk_path, aiff_path in zip(chunk_paths, aiff_paths, strict=True)
+        }
+        try:
             for future in as_completed(futures):
                 future.result()
+        except KeyboardInterrupt:
+            stop_event.set()
+            _cancel_chunk_futures(futures)
+            _wait_for_chunk_futures(futures)
+            raise
+        except Exception:
+            stop_event.set()
+            _cancel_chunk_futures(futures)
+            _wait_for_chunk_futures(futures)
+            raise
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         _merge_aiff_files(aiff_paths, combined_aiff_path)
 
@@ -335,10 +368,13 @@ def _synthesize_one_chunk(
     progress: AudioProgressCallback | None,
     retries: int,
     stall_timeout: float | None,
+    stop_event: Event | None,
 ) -> None:
     command = _say_command(say, chunk_path, aiff_path, voice=voice)
     last_error: Exception | None = None
     for attempt in range(retries + 1):
+        if stop_event is not None and stop_event.is_set():
+            raise _AudioInterrupted
         aiff_path.unlink(missing_ok=True)
         try:
             progress and progress("synthesizing", aiff_path, 0)
@@ -348,8 +384,11 @@ def _synthesize_one_chunk(
                 stall_timeout=stall_timeout,
                 monitor_path=aiff_path,
                 progress=progress,
+                stop_event=stop_event,
             )
             return
+        except _AudioInterrupted:
+            raise
         except (AudioError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             last_error = exc
             if attempt >= retries:
@@ -358,6 +397,27 @@ def _synthesize_one_chunk(
     chunk_label = chunk_path.stem.removeprefix("chunk-")
     message = f"say chunk {chunk_label} failed after {retries + 1} attempt(s)"
     raise AudioError(message) from last_error
+
+
+def _cancel_chunk_futures(futures: dict[Future[None], Path]) -> None:
+    for future in futures:
+        future.cancel()
+
+
+def _wait_for_chunk_futures(futures: dict[Future[None], Path]) -> None:
+    for future in futures:
+        if future.cancelled():
+            continue
+        try:
+            future.result(timeout=5)
+        except (
+            KeyboardInterrupt,
+            _AudioInterrupted,
+            AudioError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ):
+            continue
 
 
 def _split_text_chunks(text: str, *, chunk_chars: int) -> list[str]:

@@ -6,7 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 import requests
@@ -3513,6 +3513,51 @@ def test_synthesize_audio_terminates_subprocess_on_interrupt(
     assert not output_path.with_suffix(".aiff").exists()
 
 
+def test_synthesize_audio_chunked_interrupt_stops_sibling_workers(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("Uno.\n\nDue.", encoding="utf-8")
+    output_path = tmp_path / "article.m4a"
+    sibling_started = False
+    sibling_process = FakeChunkSiblingProcess()
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}"
+
+    def fake_popen(command: list[str]) -> FakeInterruptingProcess | FakeChunkSiblingProcess:
+        nonlocal sibling_started
+        output_arg = Path(command[command.index("-o") + 1])
+        if output_arg.name == "chunk-001.aiff":
+            return FakeChunkInterruptingProcess(lambda: sibling_started)
+        if output_arg.name == "chunk-002.aiff":
+            sibling_started = True
+            return sibling_process
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
+
+    try:
+        audio_module.synthesize_audio(
+            text_path,
+            output_path,
+            voice="",
+            audio_format="m4a",
+            chunked=True,
+            chunk_chars=4,
+            concurrency=2,
+        )
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("expected KeyboardInterrupt")
+
+    assert sibling_process.terminated is True
+    assert sibling_process.killed is False
+    assert not output_path.with_suffix(".aiff").exists()
+
+
 class FakeInterruptingProcess:
     def __init__(self) -> None:
         self.terminated = False
@@ -3525,6 +3570,36 @@ class FakeInterruptingProcess:
             self._interrupted = True
             raise KeyboardInterrupt
         return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class FakeChunkInterruptingProcess(FakeInterruptingProcess):
+    def __init__(self, sibling_started: Callable[[], bool]) -> None:
+        super().__init__()
+        self._sibling_started = sibling_started
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if not self._sibling_started():
+            raise subprocess.TimeoutExpired(["say"], 0.5)
+        return super().wait()
+
+
+class FakeChunkSiblingProcess:
+    def __init__(self) -> None:
+        self.terminated = False
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if self.terminated:
+            return 0
+        raise subprocess.TimeoutExpired(["say"], 0.5)
 
     def terminate(self) -> None:
         self.terminated = True
