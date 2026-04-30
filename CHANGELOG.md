@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added a dedicated `audiobook_output_dir` config key so packaged `.m4b`
   files can be written to an external audiobook library instead of always
   using `output_dir/audiobooks/`.
+- Removed `user_agent` from the documented user config surface and now derive
+  the HTTP `User-Agent` header automatically from the installed app version.
 
 ## [0.1.1] - 2026-04-30
 

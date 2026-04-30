@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .audio import normalize_audio_format
 from .audiobook_naming import (
     DEFAULT_AUDIOBOOK_FILENAME_FORMAT,
@@ -26,6 +27,7 @@ DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH = (
 DEFAULT_OUTPUT_PARENT_DIR = Path.home() / "Documents"
 DEFAULT_LIBRARY_FOLDER_NAME = "library"
 DEFAULT_MAGAZINE_FOLDER_NAME = "rivista"
+DEFAULT_USER_AGENT = f"get-my-domino/{__version__}"
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ class AppConfig:
     feed_index_url: str = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
     feed_folder_name: str = "la-settimana-di-domino"
     request_timeout: float = 30.0
-    user_agent: str = "get-my-domino/0.1.1"
+    user_agent: str = DEFAULT_USER_AGENT
     issue_link_patterns: tuple[str, ...] = ("?sfoglia=1",)
     article_link_patterns: tuple[str, ...] = ("/blog/20",)
     feed_article_link_patterns: tuple[str, ...] = ("/blog/20",)
@@ -200,7 +202,7 @@ def load_config(path: Path) -> AppConfig:
             )
         ),
         request_timeout=float(data.get("request_timeout", 30.0)),
-        user_agent=str(data.get("user_agent", "get-my-domino/0.1.1")),
+        user_agent=str(data.get("user_agent", DEFAULT_USER_AGENT)),
         issue_link_patterns=_string_tuple(data, "issue_link_patterns", ("?sfoglia=1",)),
         article_link_patterns=_string_tuple(data, "article_link_patterns", ("/blog/20",)),
         feed_article_link_patterns=_string_tuple(

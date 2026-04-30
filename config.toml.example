@@ -17,7 +17,6 @@ collection_dir_name = "domino"
 feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
 feed_folder_name = "la-settimana-di-domino"
 request_timeout = 30
-user_agent = "get-my-domino/0.1.1"
 # Leave empty to call macOS `say` without `-v`, so it uses the System Voice
 # selected in System Settings > Accessibility > Spoken Content.
 # Set only to a voice listed by `get-my-domino voices` when you want to force

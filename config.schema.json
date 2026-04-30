@@ -81,10 +81,6 @@
       "type": "number",
       "default": 30
     },
-    "user_agent": {
-      "type": "string",
-      "default": "get-my-domino/0.1.0"
-    },
     "siri_voice": {
       "type": "string",
       "default": ""

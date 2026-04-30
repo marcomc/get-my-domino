@@ -821,3 +821,7 @@ Audiobooks use a separate destination resolver:
 
 - by default: `output_dir/audiobooks`
 - if set explicitly: `audiobook_output_dir`
+
+The HTTP `User-Agent` header is versioned automatically from the installed app.
+It is no longer a config key because users should not need to update it by hand
+when upgrading the CLI.

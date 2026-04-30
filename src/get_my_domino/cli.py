@@ -3186,6 +3186,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "download":
             root_output_dir = args.output_dir or config.output_dir
             config = replace(config, output_dir=root_output_dir)
+            if args.all:
+                if not args.issue:
+                    raise ValueError("Use --all with --issue.")
+                if args.article:
+                    raise ValueError("Use either --article or --all with --issue, not both.")
+                if args.article_urls:
+                    raise ValueError("Do not pass article URLs with --issue/--all.")
+            if args.issue or args.article:
+                if not args.issue or not args.article:
+                    raise ValueError("Use --issue and --article together.")
+                if args.article_urls:
+                    raise ValueError("Do not pass article URLs with --issue/--article.")
+            if not args.article_urls:
+                raise ValueError("Pass one or more article URLs, or use --issue/--article.")
             _ensure_storage_layout(root_output_dir, config)
             output_dir = _magazine_output_dir(root_output_dir)
             audio_options = _audio_options(args, config)
@@ -3199,12 +3213,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
             if args.all:
-                if not args.issue:
-                    raise ValueError("Use --all with --issue.")
-                if args.article:
-                    raise ValueError("Use either --article or --all with --issue, not both.")
-                if args.article_urls:
-                    raise ValueError("Do not pass article URLs with --issue/--all.")
                 return _download_issue_articles(
                     issue_selector=str(args.issue),
                     config=config,
@@ -3224,10 +3232,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     force=bool(args.force),
                 )
             if args.issue or args.article:
-                if not args.issue or not args.article:
-                    raise ValueError("Use --issue and --article together.")
-                if args.article_urls:
-                    raise ValueError("Do not pass article URLs with --issue/--article.")
                 return _download_issue_article(
                     issue_selector=str(args.issue),
                     article_selector=str(args.article),
@@ -3245,8 +3249,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     export_formats=export_formats,
                     force=bool(args.force),
                 )
-            if not args.article_urls:
-                raise ValueError("Pass one or more article URLs, or use --issue/--article.")
             return _download_articles(
                 list(args.article_urls),
                 config,
