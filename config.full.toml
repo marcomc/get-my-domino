@@ -1,0 +1,102 @@
+# Full reference config for get-my-domino.
+#
+# This is not a second config file automatically loaded by the CLI.
+# The runtime still reads one config file at a time, normally:
+#   ~/.config/get-my-domino/config.toml
+#
+# Use this file as a complete reference and copy only the keys you need into
+# your real config.toml. Most users should start from config.toml.example
+# instead.
+
+# General
+verbose = false
+
+# Output Paths
+output_parent_dir = "~/Documents"
+collection_dir_name = "domino"
+# output_dir = "~/Documents/domino"
+# Leave unset to keep issue audiobooks under output_dir/audiobooks.
+# audiobook_output_dir = "~/Audiobooks/Domino"
+feed_folder_name = "la-settimana-di-domino"
+
+# Site Entry Points
+#
+# Most users should not change these unless the Domino site structure changes.
+base_url = "https://www.rivistadomino.it/"
+magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
+feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
+request_timeout = 30
+
+# Exports
+export_formats = ["html", "txt"]
+
+# Audio
+# Leave empty to use the macOS System Voice configured in Accessibility >
+# Spoken Content.
+siri_voice = ""
+audio_auto = false
+audio_format = "m4a"
+audio_timeout = 900
+audio_chunked = true
+audio_chunk_chars = 2500
+audio_chunk_concurrency = 3
+audio_chunk_retries = 2
+audio_stall_timeout = 45
+
+# Audiobooks
+audiobook_auto = false
+magazine_title = "Domino"
+filename_separator = "-"
+audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
+
+# Speech Normalization
+#
+# Most users only need speech_normalize_auto, speech_normalize_command,
+# speech_normalize_model, and speech_normalize_prompt_path.
+speech_normalize_auto = false
+speech_normalize_agent = "codex"
+speech_normalize_command = "codex"
+speech_normalize_model = ""
+speech_normalize_timeout = 900
+speech_normalize_force = false
+speech_normalize_fallback = false
+speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
+
+# Authentication
+#
+# Most users only need auth_username, auth_password, and auth_session_path.
+auth_login_url = "https://www.rivistadomino.it/mio-account/"
+auth_username = ""
+auth_password = ""
+auth_username_field = "username"
+auth_password_field = "password"
+auth_submit_field = "login"
+auth_submit_value = "Accedi"
+auth_session_path = "~/.config/get-my-domino/session.json"
+auth_browser_timeout = 300
+
+# Advanced Site Overrides
+#
+# These are recovery knobs for site drift. Most users should never need to
+# edit them.
+issue_link_patterns = ["?sfoglia=1"]
+article_link_patterns = ["/blog/20"]
+feed_article_link_patterns = ["/blog/20"]
+skip_link_patterns = [
+  "#",
+  "mailto:",
+  "tel:",
+  "wp-login",
+  "privacy",
+  "cookie",
+  "/blog/author/",
+]
+content_selectors = [
+  "article",
+  "main article",
+  "main",
+  ".entry-content",
+  ".post-content",
+  ".article-content",
+  "#content",
+]

@@ -719,18 +719,30 @@ def _feed_output_dir(root_output_dir: Path, config: AppConfig) -> Path:
     return _library_dir(root_output_dir) / config.feed_folder_name
 
 
-def _audiobooks_dir(root_output_dir: Path) -> Path:
-    return root_output_dir / "audiobooks"
+def _audiobooks_dir(root_output_dir: Path, config: AppConfig) -> Path:
+    del root_output_dir
+    return config.audiobooks_dir
 
 
 def _ensure_storage_layout(root_output_dir: Path, config: AppConfig) -> None:
     library_dir = _library_dir(root_output_dir)
     magazine_dir = _magazine_output_dir(root_output_dir)
     weekly_dir = _feed_output_dir(root_output_dir, config)
+    audiobook_dir = _audiobooks_dir(root_output_dir, config)
+    legacy_audiobook_dir = root_output_dir / "audiobooks"
     library_dir.mkdir(parents=True, exist_ok=True)
     magazine_dir.mkdir(parents=True, exist_ok=True)
     weekly_dir.mkdir(parents=True, exist_ok=True)
-    _audiobooks_dir(root_output_dir).mkdir(parents=True, exist_ok=True)
+
+    if (
+        audiobook_dir != legacy_audiobook_dir
+        and legacy_audiobook_dir.exists()
+        and not audiobook_dir.exists()
+        and not audiobook_dir.is_relative_to(legacy_audiobook_dir)
+    ):
+        audiobook_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy_audiobook_dir), str(audiobook_dir))
+    audiobook_dir.mkdir(parents=True, exist_ok=True)
 
     legacy_manifest = root_output_dir / "manifest.json"
     if legacy_manifest.exists():
@@ -1187,8 +1199,6 @@ def _handle_info(config: AppConfig, config_path: Path, as_json: bool) -> int:
     print(f"version: {payload['version']}")
     print(f"config_path: {payload['config_path']}")
     print(f"config_exists: {payload['config_exists']}")
-    print(f"app_name: {config.app_name}")
-    print(f"default_output: {config.default_output}")
     print(f"verbose: {config.verbose}")
     print(f"magazine_index_url: {config.magazine_index_url}")
     print(f"output_parent_dir: {config.output_parent_dir}")
@@ -1876,10 +1886,11 @@ def _build_issue_audiobook(
     plan: IssueBundlePlan,
     *,
     root_output_dir: Path,
+    config: AppConfig,
     cover_image_path: Path | None,
     filename_settings: AudiobookFilenameSettings,
 ) -> Path:
-    audiobook_dir = _audiobooks_dir(root_output_dir)
+    audiobook_dir = _audiobooks_dir(root_output_dir, config)
     output_path = _audiobook_output_path(
         audiobook_dir,
         plan.issue,
@@ -2409,6 +2420,7 @@ def _download_issue_articles(
                 article_dirs=resolved_article_dirs,
             ),
             root_output_dir=root_output_dir,
+            config=config,
             cover_image_path=cover_image_path,
             filename_settings=(
                 audiobook_filename_settings or _configured_audiobook_filename_settings(config)
@@ -2715,6 +2727,7 @@ def _handle_sync(
                 _build_issue_audiobook(
                     plan,
                     root_output_dir=root_output_dir,
+                    config=config,
                     filename_settings=(
                         audiobook_filename_settings
                         or _configured_audiobook_filename_settings(config)
@@ -2840,6 +2853,7 @@ def _handle_repackage_audiobook(
             _build_issue_audiobook(
                 plan,
                 root_output_dir=root_output_dir,
+                config=config,
                 cover_image_path=cover_image_path,
                 filename_settings=filename_settings,
             )
@@ -3171,6 +3185,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "download":
             root_output_dir = args.output_dir or config.output_dir
             config = replace(config, output_dir=root_output_dir)
+            if args.all:
+                if not args.issue:
+                    raise ValueError("Use --all with --issue.")
+                if args.article:
+                    raise ValueError("Use either --article or --all with --issue, not both.")
+                if args.article_urls:
+                    raise ValueError("Do not pass article URLs with --issue/--all.")
+            if (args.issue or args.article) and not args.all:
+                if not args.issue or not args.article:
+                    raise ValueError("Use --issue and --article together.")
+                if args.article_urls:
+                    raise ValueError("Do not pass article URLs with --issue/--article.")
             _ensure_storage_layout(root_output_dir, config)
             output_dir = _magazine_output_dir(root_output_dir)
             audio_options = _audio_options(args, config)
@@ -3184,12 +3210,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
             if args.all:
-                if not args.issue:
-                    raise ValueError("Use --all with --issue.")
-                if args.article:
-                    raise ValueError("Use either --article or --all with --issue, not both.")
-                if args.article_urls:
-                    raise ValueError("Do not pass article URLs with --issue/--all.")
                 return _download_issue_articles(
                     issue_selector=str(args.issue),
                     config=config,
@@ -3209,10 +3229,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     force=bool(args.force),
                 )
             if args.issue or args.article:
-                if not args.issue or not args.article:
-                    raise ValueError("Use --issue and --article together.")
-                if args.article_urls:
-                    raise ValueError("Do not pass article URLs with --issue/--article.")
                 return _download_issue_article(
                     issue_selector=str(args.issue),
                     article_selector=str(args.article),

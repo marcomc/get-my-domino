@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .audio import normalize_audio_format
 from .audiobook_naming import (
     DEFAULT_AUDIOBOOK_FILENAME_FORMAT,
@@ -26,12 +27,11 @@ DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH = (
 DEFAULT_OUTPUT_PARENT_DIR = Path.home() / "Documents"
 DEFAULT_LIBRARY_FOLDER_NAME = "library"
 DEFAULT_MAGAZINE_FOLDER_NAME = "rivista"
+DEFAULT_USER_AGENT = f"get-my-domino/{__version__}"
 
 
 @dataclass(frozen=True)
 class AppConfig:
-    app_name: str = "get-my-domino"
-    default_output: str = "text"
     verbose: bool = False
     base_url: str = "https://www.rivistadomino.it/"
     magazine_index_url: str = "https://www.rivistadomino.it/mio-account/my_domino/"
@@ -47,10 +47,11 @@ class AppConfig:
     output_parent_dir: Path = DEFAULT_OUTPUT_PARENT_DIR
     collection_dir_name: str = "domino"
     output_dir: Path = DEFAULT_OUTPUT_PARENT_DIR / "domino"
+    audiobook_output_dir: Path | None = None
     feed_index_url: str = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
     feed_folder_name: str = "la-settimana-di-domino"
     request_timeout: float = 30.0
-    user_agent: str = "get-my-domino/0.1.1"
+    user_agent: str = DEFAULT_USER_AGENT
     issue_link_patterns: tuple[str, ...] = ("?sfoglia=1",)
     article_link_patterns: tuple[str, ...] = ("/blog/20",)
     feed_article_link_patterns: tuple[str, ...] = ("/blog/20",)
@@ -109,7 +110,7 @@ class AppConfig:
 
     @property
     def audiobooks_dir(self) -> Path:
-        return self.output_dir / "audiobooks"
+        return self.audiobook_output_dir or (self.output_dir / "audiobooks")
 
     def with_cli_overrides(self, *, verbose: bool) -> "AppConfig":
         if not verbose:
@@ -136,6 +137,15 @@ def _string_tuple(data: dict[str, Any], key: str, default: tuple[str, ...]) -> t
     raise ValueError(f"Config key {key!r} must be a string or list of strings.")
 
 
+def _optional_path(value: object) -> Path | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    return Path(normalized).expanduser()
+
+
 def load_config(path: Path) -> AppConfig:
     data = _read_toml(path)
     magazine_title = str(
@@ -157,8 +167,6 @@ def load_config(path: Path) -> AppConfig:
         else output_parent_dir / collection_dir_name
     )
     return AppConfig(
-        app_name=str(data.get("app_name", "get-my-domino")),
-        default_output=str(data.get("default_output", "text")),
         verbose=bool(data.get("verbose", False)),
         base_url=str(data.get("base_url", "https://www.rivistadomino.it/")),
         magazine_index_url=str(
@@ -178,6 +186,7 @@ def load_config(path: Path) -> AppConfig:
         output_parent_dir=output_parent_dir,
         collection_dir_name=collection_dir_name,
         output_dir=output_dir,
+        audiobook_output_dir=_optional_path(data.get("audiobook_output_dir")),
         feed_index_url=str(
             data.get(
                 "feed_index_url",
@@ -194,7 +203,7 @@ def load_config(path: Path) -> AppConfig:
             )
         ),
         request_timeout=float(data.get("request_timeout", 30.0)),
-        user_agent=str(data.get("user_agent", "get-my-domino/0.1.1")),
+        user_agent=str(data.get("user_agent", DEFAULT_USER_AGENT)),
         issue_link_patterns=_string_tuple(data, "issue_link_patterns", ("?sfoglia=1",)),
         article_link_patterns=_string_tuple(data, "article_link_patterns", ("/blog/20",)),
         feed_article_link_patterns=_string_tuple(

@@ -5,8 +5,10 @@ import fcntl
 import json
 import subprocess
 import sys
+from concurrent.futures import CancelledError as FutureCancelledError
+from concurrent.futures import Future
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, cast
 
 import pytest
 import requests
@@ -115,6 +117,45 @@ def test_unknown_command_prints_friendly_suggestion(capsys: CaptureFixture[str])
     assert "choose from" not in captured.err
 
 
+def test_main_download_issue_all_dispatches_to_issue_downloader(monkeypatch: MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(cli, "_ensure_storage_layout", lambda root_output_dir, config: None)
+
+    def fake_download_issue_articles(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_download_issue_articles", fake_download_issue_articles)
+
+    result = cli.main(["download", "--issue", "2026-04", "--all"])
+
+    assert result == 0
+    assert len(calls) == 1
+    assert calls[0]["issue_selector"] == "2026-04"
+
+
+def test_main_download_issue_article_dispatches_to_issue_article_downloader(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(cli, "_ensure_storage_layout", lambda root_output_dir, config: None)
+
+    def fake_download_issue_article(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_download_issue_article", fake_download_issue_article)
+
+    result = cli.main(["download", "--issue", "2026-04", "--article", "1"])
+
+    assert result == 0
+    assert len(calls) == 1
+    assert calls[0]["issue_selector"] == "2026-04"
+    assert calls[0]["article_selector"] == "1"
+
+
 def test_main_help_mentions_refresh_and_repackage_commands(capsys: CaptureFixture[str]) -> None:
     result = cli.main([])
 
@@ -141,8 +182,6 @@ def test_info_command_reads_config_file(tmp_path: Path, capsys: CaptureFixture[s
     config_path.write_text(
         "\n".join(
             [
-                'app_name = "Example App"',
-                'default_output = "json"',
                 "verbose = false",
                 'auth_username = "reader@example.test"',
                 'auth_password = "secret"',
@@ -157,8 +196,6 @@ def test_info_command_reads_config_file(tmp_path: Path, capsys: CaptureFixture[s
     captured = capsys.readouterr()
 
     assert result == 0
-    assert "app_name: Example App" in captured.out
-    assert "default_output: json" in captured.out
     assert f"config_path: {config_path}" in captured.out
     assert "auth_username: reader@example.test" in captured.out
     assert "auth_password: configured" in captured.out
@@ -184,7 +221,7 @@ def test_info_command_reports_missing_auth_username(
 
 def test_info_command_can_emit_json(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text('app_name = "Example App"\n', encoding="utf-8")
+    config_path.write_text("verbose = true\n", encoding="utf-8")
 
     result = cli.main(["--config", str(config_path), "info", "--json"])
 
@@ -194,7 +231,7 @@ def test_info_command_can_emit_json(tmp_path: Path, capsys: CaptureFixture[str])
     payload = json.loads(captured.out)
     assert payload["project_name"] == "get-my-domino"
     assert payload["cli_name"] == "get-my-domino"
-    assert payload["config"]["app_name"] == "Example App"
+    assert payload["config"]["verbose"] is True
 
 
 def test_info_json_redacts_auth_password(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
@@ -247,6 +284,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
             [
                 "audio_auto = true",
                 "audiobook_auto = true",
+                'audiobook_output_dir = "~/Audiobooks/Domino"',
                 'audio_format = "mp4a"',
                 "audio_timeout = 123",
                 "audio_chunked = false",
@@ -273,6 +311,8 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
 
     assert config.audio_auto is True
     assert config.audiobook_auto is True
+    assert config.audiobook_output_dir == Path.home() / "Audiobooks" / "Domino"
+    assert config.audiobooks_dir == Path.home() / "Audiobooks" / "Domino"
     assert config.audio_format == "m4a"
     assert config.audio_timeout == 123.0
     assert config.audio_chunked is False
@@ -331,6 +371,49 @@ def test_config_derives_default_output_dir_from_collection_dir_name(tmp_path: Pa
     assert config.output_parent_dir == tmp_path
     assert config.collection_dir_name == "rivista_domino"
     assert config.output_dir == tmp_path / "rivista_domino"
+    assert config.audiobooks_dir == tmp_path / "rivista_domino" / "audiobooks"
+
+
+def test_config_supports_external_audiobook_output_dir(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_parent_dir = "{tmp_path}"',
+                'collection_dir_name = "rivista_domino"',
+                'audiobook_output_dir = "~/Audiobooks/Rivista Domino"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.output_dir == tmp_path / "rivista_domino"
+    assert config.audiobook_output_dir == Path.home() / "Audiobooks" / "Rivista Domino"
+    assert config.audiobooks_dir == Path.home() / "Audiobooks" / "Rivista Domino"
+
+
+def test_config_treats_empty_audiobook_output_dir_as_unset(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_parent_dir = "{tmp_path}"',
+                'collection_dir_name = "rivista_domino"',
+                'audiobook_output_dir = ""',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.output_dir == tmp_path / "rivista_domino"
+    assert config.audiobook_output_dir is None
+    assert config.audiobooks_dir == tmp_path / "rivista_domino" / "audiobooks"
 
 
 def test_config_reads_legacy_audiobook_naming_keys(tmp_path: Path) -> None:
@@ -1141,11 +1224,65 @@ def test_issue_audiobook_falls_back_to_legacy_audio_names(
             article_dirs=[article_dir],
         ),
         root_output_dir=output_dir,
+        config=AppConfig(output_dir=output_dir),
         cover_image_path=None,
         filename_settings=AudiobookFilenameSettings(),
     )
 
     assert packaged[0]["chapters"][0].audio_path == article_dir / "01-editoriale.m4a"
+
+
+def test_issue_audiobook_uses_external_audiobook_output_dir(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    external_audiobook_dir = tmp_path / "books"
+    issue_dir = output_dir / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-l-editoriale" / "01-editoriale"
+    article_dir.mkdir(parents=True)
+    (article_dir / "01-editoriale.m4a").write_bytes(b"audio")
+    built_paths: list[Path] = []
+
+    def fake_build_m4b(
+        output_path: Path,
+        *,
+        title: str,
+        chapters: list[object],
+        cover_image_path: Path | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Path:
+        del title, chapters, cover_image_path, metadata
+        built_paths.append(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("book", encoding="utf-8")
+        return output_path
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    cli._build_issue_audiobook(
+        cli.IssueBundlePlan(
+            issue=Issue(
+                title="Guaio persiano",
+                url="https://example.test/issue",
+                issue_code="2026-04",
+                articles=[
+                    Link(
+                        title="Editoriale",
+                        url="https://example.test/article",
+                        order=1,
+                    )
+                ],
+            ),
+            issue_dir=issue_dir,
+            article_dirs=[article_dir],
+        ),
+        root_output_dir=output_dir,
+        config=AppConfig(output_dir=output_dir, audiobook_output_dir=external_audiobook_dir),
+        cover_image_path=None,
+        filename_settings=AudiobookFilenameSettings(),
+    )
+
+    assert built_paths == [external_audiobook_dir / "domino-2026-04-guaio-persiano.m4b"]
 
 
 def test_legacy_audio_output_path_uses_root_audio_for_feed_articles(tmp_path: Path) -> None:
@@ -1339,10 +1476,11 @@ def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path)
         packaged_plan: cli.IssueBundlePlan,
         *,
         root_output_dir: Path,
+        config: AppConfig,
         cover_image_path: Path | None,
         filename_settings: AudiobookFilenameSettings,
     ) -> Path:
-        del packaged_plan, root_output_dir, cover_image_path, filename_settings
+        del packaged_plan, root_output_dir, config, cover_image_path, filename_settings
         events.append("package")
         return tmp_path / "exports" / "audiobooks" / "2026-04-guaio-persiano.m4b"
 
@@ -1475,10 +1613,11 @@ def test_repackage_audiobook_all_uses_only_downloaded_issues(
         plan: cli.IssueBundlePlan,
         *,
         root_output_dir: Path,
+        config: AppConfig,
         cover_image_path: Path | None,
         filename_settings: AudiobookFilenameSettings,
     ) -> Path:
-        del root_output_dir, cover_image_path, filename_settings
+        del root_output_dir, config, cover_image_path, filename_settings
         packaged.append(plan.issue.issue_code or "")
         return issue_dir / "book.m4b"
 
@@ -3397,6 +3536,51 @@ def test_synthesize_audio_terminates_subprocess_on_interrupt(
     assert not output_path.with_suffix(".aiff").exists()
 
 
+def test_synthesize_audio_chunked_interrupt_stops_sibling_workers(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("Uno.\n\nDue.", encoding="utf-8")
+    output_path = tmp_path / "article.m4a"
+    sibling_started = False
+    sibling_process = FakeChunkSiblingProcess()
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}"
+
+    def fake_popen(command: list[str]) -> FakeInterruptingProcess | FakeChunkSiblingProcess:
+        nonlocal sibling_started
+        output_arg = Path(command[command.index("-o") + 1])
+        if output_arg.name == "chunk-001.aiff":
+            return FakeChunkInterruptingProcess(lambda: sibling_started)
+        if output_arg.name == "chunk-002.aiff":
+            sibling_started = True
+            return sibling_process
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("get_my_domino.audio.shutil.which", fake_which)
+    monkeypatch.setattr("get_my_domino.audio.subprocess.Popen", fake_popen)
+
+    try:
+        audio_module.synthesize_audio(
+            text_path,
+            output_path,
+            voice="",
+            audio_format="m4a",
+            chunked=True,
+            chunk_chars=4,
+            concurrency=2,
+        )
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("expected KeyboardInterrupt")
+
+    assert sibling_process.terminated is True
+    assert sibling_process.killed is False
+    assert not output_path.with_suffix(".aiff").exists()
+
+
 class FakeInterruptingProcess:
     def __init__(self) -> None:
         self.terminated = False
@@ -3415,6 +3599,82 @@ class FakeInterruptingProcess:
 
     def kill(self) -> None:
         self.killed = True
+
+
+class FakeChunkInterruptingProcess(FakeInterruptingProcess):
+    def __init__(self, sibling_started: Callable[[], bool]) -> None:
+        super().__init__()
+        self._sibling_started = sibling_started
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if not self._sibling_started():
+            raise subprocess.TimeoutExpired(["say"], 0.5)
+        return super().wait()
+
+
+class FakeChunkSiblingProcess:
+    def __init__(self) -> None:
+        self.terminated = False
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if self.terminated:
+            return 0
+        raise subprocess.TimeoutExpired(["say"], 0.5)
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class FakeStuckFuture:
+    def cancelled(self) -> bool:
+        return False
+
+    def cancel(self) -> bool:
+        return False
+
+    def result(self, timeout: float | None = None) -> None:
+        del timeout
+        raise TimeoutError
+
+
+class FakeCancelledFuture(FakeStuckFuture):
+    def result(self, timeout: float | None = None) -> None:
+        del timeout
+        raise FutureCancelledError
+
+
+def test_wait_for_chunk_futures_ignores_future_timeout() -> None:
+    future = cast(Future[None], FakeStuckFuture())
+    audio_module._wait_for_chunk_futures({future: Path("chunk-001.aiff")})
+
+
+def test_wait_for_chunk_futures_ignores_future_cancellation() -> None:
+    future = cast(Future[None], FakeCancelledFuture())
+    audio_module._wait_for_chunk_futures({future: Path("chunk-001.aiff")})
+
+
+def test_ensure_storage_layout_skips_self_nested_audiobook_migration(tmp_path: Path) -> None:
+    output_dir = tmp_path / "exports"
+    legacy_audiobook_dir = output_dir / "audiobooks"
+    nested_audiobook_dir = legacy_audiobook_dir / "external"
+    legacy_audiobook_dir.mkdir(parents=True)
+    (legacy_audiobook_dir / "legacy-book.m4b").write_text("book", encoding="utf-8")
+
+    cli._ensure_storage_layout(
+        output_dir,
+        AppConfig(output_dir=output_dir, audiobook_output_dir=nested_audiobook_dir),
+    )
+
+    assert legacy_audiobook_dir.exists()
+    assert (legacy_audiobook_dir / "legacy-book.m4b").exists()
+    assert nested_audiobook_dir.exists()
+    assert not (nested_audiobook_dir / "legacy-book.m4b").exists()
 
 
 def test_synthesize_audio_times_out_and_removes_temporary_aiff(

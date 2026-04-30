@@ -149,53 +149,41 @@ The CLI reads optional config from:
 Start from the example file in this repository:
 
 - [config.toml.example](config.toml.example)
+- [config.full.toml](config.full.toml)
 - [config.schema.json](config.schema.json)
+
+`config.toml.example` is the recommended user template. It keeps only the
+settings most readers are likely to change.
+
+`config.full.toml` is a complete reference file with every supported key,
+including advanced site-override and maintenance knobs. It is not loaded
+automatically by the CLI. The runtime still reads one config file at a time,
+normally `~/.config/get-my-domino/config.toml`.
 
 Example:
 
 ```toml
-app_name = "get-my-domino"
-default_output = "text"
 verbose = false
-base_url = "https://www.rivistadomino.it/"
-magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
 output_parent_dir = "~/Documents"
 collection_dir_name = "domino"
 # output_dir = "~/Documents/domino"
-feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
+# audiobook_output_dir = "~/Audiobooks/Domino"
 feed_folder_name = "la-settimana-di-domino"
+export_formats = ["html", "txt"]
+siri_voice = ""
 audio_auto = false
 audiobook_auto = false
 audio_format = "m4a"
-audio_timeout = 900
-audio_chunked = true
-audio_chunk_chars = 2500
-audio_chunk_concurrency = 3
-audio_chunk_retries = 2
-audio_stall_timeout = 45
 speech_normalize_auto = false
-speech_normalize_agent = "codex"
 speech_normalize_command = "codex"
 speech_normalize_model = ""
-speech_normalize_timeout = 900
-speech_normalize_force = false
-speech_normalize_fallback = false
 speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
-export_formats = ["html", "txt"]
-siri_voice = ""
-auth_login_url = "https://www.rivistadomino.it/mio-account/"
+magazine_title = "Domino"
+filename_separator = "-"
+audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
 auth_username = ""
 auth_password = ""
-auth_username_field = "username"
-auth_password_field = "password"
-auth_submit_field = "login"
-auth_submit_value = "Accedi"
 auth_session_path = "~/.config/get-my-domino/session.json"
-auth_browser_timeout = 300
-issue_link_patterns = ["?sfoglia=1"]
-article_link_patterns = ["/blog/20"]
-feed_article_link_patterns = ["/blog/20"]
-content_selectors = ["article", "main", ".entry-content"]
 ```
 
 Authentication can use either a saved session or TOML credentials. Run
@@ -211,6 +199,17 @@ and revalidates them against `mio-account`.
 
 Issue discovery starts from the subscriber `my_domino` page and keeps
 `?sfoglia=1` links so article discovery can reach the private issue contents.
+
+Most users should never need to touch the advanced site-override keys such as:
+
+- `content_selectors`
+- `issue_link_patterns`
+- `article_link_patterns`
+- `feed_article_link_patterns`
+- `auth_submit_field`
+- `auth_submit_value`
+
+Those exist mainly as recovery knobs if the site markup or login form changes.
 
 ## Usage
 
@@ -282,9 +281,10 @@ articles. `sync-feed` does the same for `La settimana di Domino`.
 
 When you add `--audiobook` to `download --issue YYYY-NN --all` or to
 `sync-magazine`, the CLI also packages each complete magazine issue as one
-chapterized `.m4b` file under `output_dir/audiobooks/`. The package reuses the
-ordered per-article `.m4a` files as audiobook chapters, embeds the issue cover
-image when available, and writes issue-level metadata sidecars as
+chapterized `.m4b` file under `config.audiobooks_dir`, which defaults to
+`output_dir/audiobooks/` unless you set `audiobook_output_dir`. The package
+reuses the ordered per-article `.m4a` files as audiobook chapters, embeds the
+issue cover image when available, and writes issue-level metadata sidecars as
 `<issue-folder>/issue.json`. If you set `audiobook_auto = true` in the config,
 the same packaging also happens automatically for `sync-magazine` and for full
 issue downloads via `download --issue YYYY-NN --all`.
@@ -376,6 +376,15 @@ Older keys such as `audiobook_filename_magazine_title`,
 `audiobook_filename_separator`, and `audiobook_filename_format` are still
 accepted for backward compatibility, but the names above are now the preferred
 ones.
+
+If your `.m4b` library lives elsewhere, set for example:
+
+```toml
+audiobook_output_dir = "~/Audiobooks/Domino"
+```
+
+That redirects only the packaged audiobook destination. Article exports,
+issue metadata, and per-article audio still remain under `output_dir/library`.
 
 Available filename fields:
 
@@ -527,6 +536,9 @@ output_dir/
             └── 02-la-guerra-va-male/
                 └── 02-e-la-casa-bianca-rest-sola/
 ```
+
+If `audiobook_output_dir` is configured, replace the top-level `audiobooks/`
+entry above with that external path.
 
 Single-article audio now lives beside the article exports and metadata, so the
 old top-level `output_dir/audio/` tree is no longer the canonical layout.
@@ -732,6 +744,7 @@ get-my-domino --config ./config.toml info --json
 ├── Makefile
 ├── README.md
 ├── TODO.md
+├── config.full.toml
 ├── config.toml.example
 ├── pyproject.toml
 ├── scripts/
@@ -802,3 +815,12 @@ output_parent_dir/collection_dir_name
 `collection_dir_name` is intended to be a filesystem slug. By default it is
 derived from `magazine_title` in lowercase with underscores, for example
 `"Rivista Domino"` -> `rivista_domino`.
+
+Audiobooks use a separate destination resolver:
+
+- by default: `output_dir/audiobooks`
+- if set explicitly: `audiobook_output_dir`
+
+The HTTP `User-Agent` header is versioned automatically from the installed app.
+It is no longer a config key because users should not need to update it by hand
+when upgrading the CLI.

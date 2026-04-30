@@ -1,83 +1,46 @@
 # Copy this file to ~/.config/get-my-domino/config.toml or pass it with
 # --config.
+#
+# The CLI reads one config file at a time.
+# For every supported key, advanced site overrides, and maintenance knobs, see
+# ./config.full.toml in this repository.
 
-app_name = "get-my-domino"
-default_output = "text"
+# General
 verbose = false
-base_url = "https://www.rivistadomino.it/"
-magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
+
+# Output Paths
 output_parent_dir = "~/Documents"
-# If output_dir is omitted, the default root becomes
-# output_parent_dir/collection_dir_name.
 collection_dir_name = "domino"
 # output_dir = "~/Documents/domino"
-feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
+# Leave unset to keep issue audiobooks under output_dir/audiobooks.
+# audiobook_output_dir = "~/Audiobooks/Domino"
 feed_folder_name = "la-settimana-di-domino"
-request_timeout = 30
-user_agent = "get-my-domino/0.1.0"
-# Leave empty to call macOS `say` without `-v`, so it uses the System Voice
-# selected in System Settings > Accessibility > Spoken Content.
-# Set only to a voice listed by `get-my-domino voices` when you want to force
-# one of the older `say -v` selectable voices.
-siri_voice = ""
-audio_auto = false
-audiobook_auto = false
-audio_format = "m4a"
-audio_timeout = 900
-audio_chunked = true
-audio_chunk_chars = 2500
-audio_chunk_concurrency = 3
-audio_chunk_retries = 2
-audio_stall_timeout = 45
 
-# Optional AI pre-processing before audio generation. Leave auto disabled for
-# the fully local pipeline; enable per command with --speech-normalize.
-speech_normalize_auto = false
-speech_normalize_agent = "codex"
-speech_normalize_command = "codex"
-# Leave empty to use the Codex CLI default model, or set an explicit model
-# name such as "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", or, if
-# your account has access, the lower-cost ultra-fast
-# "gpt-5.3-codex-spark" research preview.
-speech_normalize_model = ""
-speech_normalize_timeout = 900
-speech_normalize_force = false
-speech_normalize_fallback = false
-speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
-
+# Exports
 export_formats = ["html", "txt"]
 
-# Audiobook filename customization.
-# magazine_title is the human title token you want to appear in filenames.
-# magazine_slug is derived from magazine_title by lowercasing it and replacing
-# spaces or punctuation with the configured filename_separator.
+# Audio
+# Leave empty to use the macOS System Voice configured in Accessibility >
+# Spoken Content.
+siri_voice = ""
+audio_auto = false
+audio_format = "m4a"
+
+# Audiobooks
+audiobook_auto = false
 magazine_title = "Domino"
 filename_separator = "-"
 audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
 
-# Authentication is read from this config file, not from browser extensions.
-# Fill these values in ~/.config/get-my-domino/config.toml.
-auth_login_url = "https://www.rivistadomino.it/mio-account/"
+# Speech Normalization
+speech_normalize_auto = false
+speech_normalize_command = "codex"
+# Leave empty to use the Codex CLI default model, or set one explicitly such
+# as "gpt-5.5", "gpt-5.4-mini", or "gpt-5.3-codex-spark" when available.
+speech_normalize_model = ""
+speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
+
+# Authentication
 auth_username = ""
 auth_password = ""
-auth_username_field = "username"
-auth_password_field = "password"
-auth_submit_field = "login"
-auth_submit_value = "Accedi"
 auth_session_path = "~/.config/get-my-domino/session.json"
-auth_browser_timeout = 300
-
-# Tune these if the private site structure changes.
-issue_link_patterns = ["?sfoglia=1"]
-article_link_patterns = ["/blog/20"]
-feed_article_link_patterns = ["/blog/20"]
-skip_link_patterns = ["#", "mailto:", "tel:", "wp-login", "privacy", "cookie", "/blog/author/"]
-content_selectors = [
-  "article",
-  "main article",
-  "main",
-  ".entry-content",
-  ".post-content",
-  ".article-content",
-  "#content",
-]
