@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from .audio import normalize_audio_format
+from .audiobook_naming import (
+    DEFAULT_AUDIOBOOK_FILENAME_FORMAT,
+    DEFAULT_AUDIOBOOK_FILENAME_SEPARATOR,
+    DEFAULT_AUDIOBOOK_MAGAZINE_TITLE,
+    validate_audiobook_format,
+    validate_audiobook_separator,
+)
 
 SUPPORTED_EXPORT_FORMATS = ("html", "txt", "rtf")
 
@@ -16,7 +23,9 @@ DEFAULT_SESSION_PATH = Path.home() / ".config" / "get-my-domino" / "session.json
 DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH = (
     Path.home() / ".config" / "get-my-domino" / "speech-normalize-codex.txt"
 )
-DEFAULT_OUTPUT_DIR = Path.home() / "Documents" / "rivistadomino"
+DEFAULT_OUTPUT_PARENT_DIR = Path.home() / "Documents"
+DEFAULT_LIBRARY_FOLDER_NAME = "library"
+DEFAULT_MAGAZINE_FOLDER_NAME = "rivista"
 
 
 @dataclass(frozen=True)
@@ -35,11 +44,13 @@ class AppConfig:
     auth_submit_value: str = "Accedi"
     auth_session_path: Path = DEFAULT_SESSION_PATH
     auth_browser_timeout: float = 300.0
-    output_dir: Path = DEFAULT_OUTPUT_DIR
+    output_parent_dir: Path = DEFAULT_OUTPUT_PARENT_DIR
+    collection_dir_name: str = "domino"
+    output_dir: Path = DEFAULT_OUTPUT_PARENT_DIR / "domino"
     feed_index_url: str = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
     feed_folder_name: str = "la-settimana-di-domino"
     request_timeout: float = 30.0
-    user_agent: str = "get-my-domino/0.1.0"
+    user_agent: str = "get-my-domino/0.1.1"
     issue_link_patterns: tuple[str, ...] = ("?sfoglia=1",)
     article_link_patterns: tuple[str, ...] = ("/blog/20",)
     feed_article_link_patterns: tuple[str, ...] = ("/blog/20",)
@@ -63,6 +74,7 @@ class AppConfig:
     )
     siri_voice: str | None = None
     audio_auto: bool = False
+    audiobook_auto: bool = False
     audio_format: str = "m4a"
     audio_timeout: float = 900.0
     audio_chunked: bool = True
@@ -79,10 +91,25 @@ class AppConfig:
     speech_normalize_fallback: bool = False
     speech_normalize_prompt_path: Path = DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH
     export_formats: tuple[str, ...] = ("html", "txt")
+    magazine_title: str = DEFAULT_AUDIOBOOK_MAGAZINE_TITLE
+    filename_separator: str = DEFAULT_AUDIOBOOK_FILENAME_SEPARATOR
+    audiobook_name_format: str = DEFAULT_AUDIOBOOK_FILENAME_FORMAT
+
+    @property
+    def library_dir(self) -> Path:
+        return self.output_dir / DEFAULT_LIBRARY_FOLDER_NAME
+
+    @property
+    def magazine_output_dir(self) -> Path:
+        return self.library_dir / DEFAULT_MAGAZINE_FOLDER_NAME
 
     @property
     def feed_output_dir(self) -> Path:
-        return self.output_dir / self.feed_folder_name
+        return self.library_dir / self.feed_folder_name
+
+    @property
+    def audiobooks_dir(self) -> Path:
+        return self.output_dir / "audiobooks"
 
     def with_cli_overrides(self, *, verbose: bool) -> "AppConfig":
         if not verbose:
@@ -111,6 +138,24 @@ def _string_tuple(data: dict[str, Any], key: str, default: tuple[str, ...]) -> t
 
 def load_config(path: Path) -> AppConfig:
     data = _read_toml(path)
+    magazine_title = str(
+        _config_with_legacy_alias(
+            data,
+            key="magazine_title",
+            legacy_key="audiobook_filename_magazine_title",
+            default=DEFAULT_AUDIOBOOK_MAGAZINE_TITLE,
+        )
+    )
+    output_parent_dir = Path(
+        str(data.get("output_parent_dir", DEFAULT_OUTPUT_PARENT_DIR))
+    ).expanduser()
+    collection_dir_name = str(data.get("collection_dir_name", _slug_output_name(magazine_title)))
+    output_dir_value = data.get("output_dir")
+    output_dir = (
+        Path(str(output_dir_value)).expanduser()
+        if output_dir_value is not None
+        else output_parent_dir / collection_dir_name
+    )
     return AppConfig(
         app_name=str(data.get("app_name", "get-my-domino")),
         default_output=str(data.get("default_output", "text")),
@@ -130,7 +175,9 @@ def load_config(path: Path) -> AppConfig:
             str(data.get("auth_session_path", DEFAULT_SESSION_PATH))
         ).expanduser(),
         auth_browser_timeout=float(data.get("auth_browser_timeout", 300.0)),
-        output_dir=Path(str(data.get("output_dir", DEFAULT_OUTPUT_DIR))).expanduser(),
+        output_parent_dir=output_parent_dir,
+        collection_dir_name=collection_dir_name,
+        output_dir=output_dir,
         feed_index_url=str(
             data.get(
                 "feed_index_url",
@@ -147,7 +194,7 @@ def load_config(path: Path) -> AppConfig:
             )
         ),
         request_timeout=float(data.get("request_timeout", 30.0)),
-        user_agent=str(data.get("user_agent", "get-my-domino/0.1.0")),
+        user_agent=str(data.get("user_agent", "get-my-domino/0.1.1")),
         issue_link_patterns=_string_tuple(data, "issue_link_patterns", ("?sfoglia=1",)),
         article_link_patterns=_string_tuple(data, "article_link_patterns", ("/blog/20",)),
         feed_article_link_patterns=_string_tuple(
@@ -175,6 +222,7 @@ def load_config(path: Path) -> AppConfig:
         ),
         siri_voice=str(data["siri_voice"]) if data.get("siri_voice") else None,
         audio_auto=bool(data.get("audio_auto", False)),
+        audiobook_auto=bool(data.get("audiobook_auto", False)),
         audio_format=normalize_audio_format(str(data.get("audio_format", "m4a"))),
         audio_timeout=normalize_audio_timeout(data.get("audio_timeout", 900.0)),
         audio_chunked=bool(data.get("audio_chunked", True)),
@@ -204,6 +252,27 @@ def load_config(path: Path) -> AppConfig:
             str(data.get("speech_normalize_prompt_path", DEFAULT_SPEECH_NORMALIZE_PROMPT_PATH))
         ).expanduser(),
         export_formats=normalize_export_formats(data.get("export_formats", ("html", "txt"))),
+        magazine_title=magazine_title,
+        filename_separator=validate_audiobook_separator(
+            str(
+                _config_with_legacy_alias(
+                    data,
+                    key="filename_separator",
+                    legacy_key="audiobook_filename_separator",
+                    default=DEFAULT_AUDIOBOOK_FILENAME_SEPARATOR,
+                )
+            )
+        ),
+        audiobook_name_format=validate_audiobook_format(
+            str(
+                _config_with_legacy_alias(
+                    data,
+                    key="audiobook_name_format",
+                    legacy_key="audiobook_filename_format",
+                    default=DEFAULT_AUDIOBOOK_FILENAME_FORMAT,
+                )
+            )
+        ),
     )
 
 
@@ -211,6 +280,29 @@ def _folder_name_from_legacy_weekly_output(data: dict[str, Any]) -> str:
     if "weekly_output_dir" not in data:
         return "la-settimana-di-domino"
     return Path(str(data["weekly_output_dir"])).expanduser().name or "la-settimana-di-domino"
+
+
+def _config_with_legacy_alias(
+    data: dict[str, Any],
+    *,
+    key: str,
+    legacy_key: str,
+    default: object,
+) -> object:
+    if key in data:
+        return data[key]
+    if legacy_key in data:
+        return data[legacy_key]
+    return default
+
+
+def _slug_output_name(value: str) -> str:
+    lowered = value.strip().lower()
+    lowered = "".join(char if char.isalnum() else "_" for char in lowered)
+    lowered = lowered.strip("_")
+    while "__" in lowered:
+        lowered = lowered.replace("__", "_")
+    return lowered or "domino"
 
 
 def normalize_export_formats(value: object) -> tuple[str, ...]:

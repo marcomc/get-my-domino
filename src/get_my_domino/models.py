@@ -10,6 +10,7 @@ class Link:
     title: str
     url: str
     group: str | None = None
+    author: str | None = None
     published_date: str | None = None
     order: int | None = None
 
@@ -18,8 +19,10 @@ class Link:
 class Issue:
     title: str
     url: str
-    published_month: str | None
+    issue_code: str | None
     articles: list[Link]
+    cover_image_url: str | None = None
+    summary: str | None = None
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,13 @@
 
 This scaffold is intentionally opinionated.
 
+## Maintainer Docs
+
+- [Domino Site Structure Notes](domino-site-structure.md)
+  documents the current subscriber index, issue page, feed page, and article
+  selectors that the scraper depends on, plus the config-first and code-level
+  places to patch if `rivistadomino.it` changes.
+
 ## Included Defaults
 
 - `uv` for environment and package management

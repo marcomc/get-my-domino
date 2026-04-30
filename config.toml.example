@@ -6,7 +6,11 @@ default_output = "text"
 verbose = false
 base_url = "https://www.rivistadomino.it/"
 magazine_index_url = "https://www.rivistadomino.it/mio-account/my_domino/"
-output_dir = "~/Documents/rivistadomino"
+output_parent_dir = "~/Documents"
+# If output_dir is omitted, the default root becomes
+# output_parent_dir/collection_dir_name.
+collection_dir_name = "domino"
+# output_dir = "~/Documents/domino"
 feed_index_url = "https://www.rivistadomino.it/blog/category/la-settimana-di-domino/"
 feed_folder_name = "la-settimana-di-domino"
 request_timeout = 30
@@ -17,6 +21,7 @@ user_agent = "get-my-domino/0.1.0"
 # one of the older `say -v` selectable voices.
 siri_voice = ""
 audio_auto = false
+audiobook_auto = false
 audio_format = "m4a"
 audio_timeout = 900
 audio_chunked = true
@@ -30,6 +35,10 @@ audio_stall_timeout = 45
 speech_normalize_auto = false
 speech_normalize_agent = "codex"
 speech_normalize_command = "codex"
+# Leave empty to use the Codex CLI default model, or set an explicit model
+# name such as "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", or, if
+# your account has access, the lower-cost ultra-fast
+# "gpt-5.3-codex-spark" research preview.
 speech_normalize_model = ""
 speech_normalize_timeout = 900
 speech_normalize_force = false
@@ -37,6 +46,14 @@ speech_normalize_fallback = false
 speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
 
 export_formats = ["html", "txt"]
+
+# Audiobook filename customization.
+# magazine_title is the human title token you want to appear in filenames.
+# magazine_slug is derived from magazine_title by lowercasing it and replacing
+# spaces or punctuation with the configured filename_separator.
+magazine_title = "Domino"
+filename_separator = "-"
+audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}"
 
 # Authentication is read from this config file, not from browser extensions.
 # Fill these values in ~/.config/get-my-domino/config.toml.

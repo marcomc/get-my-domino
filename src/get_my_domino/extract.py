@@ -56,14 +56,14 @@ def article_date_from_url(url: str) -> str | None:
     return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
 
 
-def issue_month_from_text(value: str) -> str | None:
+def issue_code_from_text(value: str) -> str | None:
     match = re.search(r"\b(\d{1,2})/(\d{4})\b", value)
     if not match:
         return None
-    month = int(match.group(1))
-    if month < 1 or month > 12:
+    issue_number = int(match.group(1))
+    if issue_number < 1 or issue_number > 12:
         return None
-    return f"{match.group(2)}-{month:02d}"
+    return f"{match.group(2)}-{issue_number:02d}"
 
 
 def _clean_text(value: str) -> str:
@@ -114,8 +114,9 @@ def extract_article(
     content_selectors: Iterable[str],
 ) -> Article:
     soup = BeautifulSoup(html, "html.parser")
-    title = _clean_text(soup.title.get_text(" ", strip=True)) if soup.title else page_url
-    author = _extract_author(soup)
+    title = _normalize_article_title(
+        _clean_text(soup.title.get_text(" ", strip=True)) if soup.title else page_url
+    )
 
     for selector in REMOVABLE_SELECTORS:
         for element in soup.select(selector):
@@ -133,7 +134,8 @@ def extract_article(
     if heading is not None:
         heading_text = _clean_text(heading.get_text(" ", strip=True))
         if heading_text:
-            title = heading_text
+            title = _normalize_article_title(heading_text)
+    author = _extract_author(soup, content=content, heading=heading)
 
     clean_html = str(content)
     text = "\n\n".join(
@@ -150,8 +152,20 @@ def extract_article(
     )
 
 
-def _extract_author(soup: BeautifulSoup) -> str | None:
+def _extract_author(
+    soup: BeautifulSoup,
+    *,
+    content: Tag | BeautifulSoup,
+    heading: Tag | None,
+) -> str | None:
+    meta_author = _extract_author_from_meta(soup)
+    if meta_author:
+        return meta_author
+
     selectors = (
+        "h1 + .article_byline",
+        "h1 + div.article_byline a",
+        ".article_byline",
         "[rel='author']",
         ".author",
         ".byline",
@@ -162,32 +176,88 @@ def _extract_author(soup: BeautifulSoup) -> str | None:
         element = soup.select_one(selector)
         if element is None:
             continue
-        author = _clean_author(element.get_text(" ", strip=True))
+        author = _clean_explicit_author(element.get_text(" ", strip=True))
         if author:
             return author
 
-    for element in soup.find_all(["p", "h3", "h4", "span"]):
+    if heading is not None:
+        sibling = heading.find_next_sibling()
+        hops = 0
+        while isinstance(sibling, Tag) and hops < 4:
+            author = _clean_author(sibling.get_text(" ", strip=True))
+            if author:
+                return author
+            sibling = sibling.find_next_sibling()
+            hops += 1
+
+    for index, element in enumerate(content.find_all(["p", "div", "h3", "h4", "span", "a"])):
         if not isinstance(element, Tag):
             continue
+        if index >= 8:
+            break
         author = _clean_author(element.get_text(" ", strip=True))
         if author:
             return author
     return None
 
 
-def _clean_author(value: str) -> str | None:
-    cleaned = _clean_text(value)
-    match = re.fullmatch(
-        r"(?:di|by|da|diretta\s+da|diretto\s+da)\s+(.+)", cleaned, flags=re.IGNORECASE
+def _extract_author_from_meta(soup: BeautifulSoup) -> str | None:
+    selectors = (
+        "meta[name='author']",
+        "meta[property='author']",
+        "meta[name='twitter:data1']",
     )
-    if match:
-        cleaned = match.group(1).strip()
+    for selector in selectors:
+        element = soup.select_one(selector)
+        if not isinstance(element, Tag):
+            continue
+        author = _clean_explicit_author(str(element.get("content", "")))
+        if author:
+            return author
+    return None
+
+
+def _clean_explicit_author(value: str) -> str | None:
+    cleaned = _strip_author_prefix(value)
+    if not cleaned or len(cleaned) > 80:
+        return None
+    if not re.search(r"\s", cleaned):
+        return None
+    if re.search(r"[!?:;,]", cleaned):
+        return None
+    if re.search(r"\d", cleaned):
+        return None
+    if not re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ.'’`\- ]+", cleaned):
+        return None
+    return cleaned.strip()
+
+
+def _clean_author(value: str) -> str | None:
+    cleaned = _strip_author_prefix(value)
     if not cleaned or len(cleaned) > 80:
         return None
     if not re.search(r"\s", cleaned):
         return None
     if re.search(r"[.!?:;]", cleaned):
         return None
+    return cleaned
+
+
+def _normalize_article_title(value: str) -> str:
+    cleaned = _clean_text(value)
+    for suffix in (" - Rivista Domino", " - Domino"):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)].strip()
+    return cleaned or value
+
+
+def _strip_author_prefix(value: str) -> str:
+    cleaned = _clean_text(value)
+    match = re.fullmatch(
+        r"(?:di|by|da|diretta\s+da|diretto\s+da)\s+(.+)", cleaned, flags=re.IGNORECASE
+    )
+    if match:
+        cleaned = match.group(1).strip()
     return cleaned
 
 

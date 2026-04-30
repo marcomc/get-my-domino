@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import requests
@@ -15,11 +16,17 @@ from requests.cookies import RequestsCookieJar
 
 from get_my_domino import __version__, cli, speech_normalize
 from get_my_domino import audio as audio_module
+from get_my_domino.audiobook_naming import AudiobookFilenameSettings
 from get_my_domino.config import AppConfig, load_config
 from get_my_domino.extract import extract_article, extract_links
-from get_my_domino.models import Article, Link
+from get_my_domino.models import Article, Issue, Link
 from get_my_domino.session_store import load_cookies, save_cookies
-from get_my_domino.storage import article_text_document, write_article, write_manifest
+from get_my_domino.storage import (
+    article_text_document,
+    read_manifest,
+    write_article,
+    write_manifest,
+)
 from get_my_domino.web import WebClient
 
 
@@ -106,6 +113,16 @@ def test_unknown_command_prints_friendly_suggestion(capsys: CaptureFixture[str])
     assert "Did you mean: download?" in captured.err
     assert "invalid choice" not in captured.err
     assert "choose from" not in captured.err
+
+
+def test_main_help_mentions_refresh_and_repackage_commands(capsys: CaptureFixture[str]) -> None:
+    result = cli.main([])
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "refresh-issue-metadata" in captured.out
+    assert "repackage-audiobook" in captured.out
 
 
 def test_console_main_reads_sys_argv(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]) -> None:
@@ -229,6 +246,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
         "\n".join(
             [
                 "audio_auto = true",
+                "audiobook_auto = true",
                 'audio_format = "mp4a"',
                 "audio_timeout = 123",
                 "audio_chunked = false",
@@ -254,6 +272,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
     config = load_config(config_path)
 
     assert config.audio_auto is True
+    assert config.audiobook_auto is True
     assert config.audio_format == "m4a"
     assert config.audio_timeout == 123.0
     assert config.audio_chunked is False
@@ -270,6 +289,69 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
     assert config.speech_normalize_fallback is True
     assert config.speech_normalize_prompt_path == Path.home() / "custom-prompt.md"
     assert config.siri_voice == "Siri Voice 2"
+
+
+def test_config_reads_preferred_audiobook_naming_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'magazine_title = "Rivista Domino"',
+                'filename_separator = "."',
+                'audiobook_name_format = "{magazine}{sep}{year}{sep}{number}{sep}{title_slug}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.magazine_title == "Rivista Domino"
+    assert config.filename_separator == "."
+    assert config.audiobook_name_format == "{magazine}{sep}{year}{sep}{number}{sep}{title_slug}"
+
+
+def test_config_derives_default_output_dir_from_collection_dir_name(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_parent_dir = "{tmp_path}"',
+                'magazine_title = "Rivista Domino"',
+                'collection_dir_name = "rivista_domino"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.output_parent_dir == tmp_path
+    assert config.collection_dir_name == "rivista_domino"
+    assert config.output_dir == tmp_path / "rivista_domino"
+
+
+def test_config_reads_legacy_audiobook_naming_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'audiobook_filename_magazine_title = "Rivista Domino"',
+                'audiobook_filename_separator = "_"',
+                'audiobook_filename_format = "{magazine_slug}{sep}{issue}{sep}{title_slug}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.magazine_title == "Rivista Domino"
+    assert config.filename_separator == "_"
+    assert config.audiobook_name_format == "{magazine_slug}{sep}{issue}{sep}{title_slug}"
 
 
 def test_config_rejects_unknown_audio_format(tmp_path: Path) -> None:
@@ -476,9 +558,10 @@ def test_issue_articles_keep_month_groups_dates_and_order(tmp_path: Path) -> Non
         {
             issue_url: """
             <article class="product">
+              <meta property="og:image" content="https://cdn.example.test/guaio.jpg" />
               <div class="summary">
                 <h1 class="product_title">Guaio persiano</h1>
-                <p>4/2026 Guaio persiano</p>
+                <p>4/2026 Guaio persiano La crisi spiegata</p>
               </div>
               <div id="tab-articles">
                 <h3>L'Editoriale</h3>
@@ -499,7 +582,9 @@ def test_issue_articles_keep_month_groups_dates_and_order(tmp_path: Path) -> Non
     ).discover_issue(issue_url)
 
     assert issue.title == "Guaio persiano"
-    assert issue.published_month == "2026-04"
+    assert issue.issue_code == "2026-04"
+    assert issue.cover_image_url == "https://cdn.example.test/guaio.jpg"
+    assert issue.summary == "4/2026 La crisi spiegata"
     assert [
         (link.title, link.group, link.published_date, link.order) for link in issue.articles
     ] == [
@@ -596,7 +681,7 @@ def test_catalog_expands_selected_issue_grouped_by_section(
     captured = capsys.readouterr()
     assert result == 0
     assert "Guaio persiano" in captured.out
-    assert "month: 2026-04" in captured.out
+    assert "issue: 2026-04" in captured.out
     assert "published: 2026-04-21" in captured.out
     assert "├── 01  L'Editoriale" in captured.out
     assert "│   └── 01  Editoriale" in captured.out
@@ -678,7 +763,7 @@ def test_catalog_rejects_numeric_issue_selector(tmp_path: Path) -> None:
             as_json=False,
         )
     except ValueError as exc:
-        assert "Use a YYYY-MM issue code" in str(exc)
+        assert "Use a YYYY-NN issue code" in str(exc)
     else:
         raise AssertionError("Expected numeric catalog selector to fail.")
 
@@ -720,7 +805,7 @@ def test_download_resolves_issue_article_selector(
         issue_selector="2026-04",
         article_selector="1",
         config=config,
-        output_dir=config.output_dir,
+        root_output_dir=config.output_dir,
         create_audio=False,
         audio_format="m4a",
         audio_timeout=900.0,
@@ -742,6 +827,8 @@ def test_download_resolves_issue_article_selector(
     assert (
         tmp_path
         / "exports"
+        / "library"
+        / "rivista"
         / "2026-04-guaio-persiano"
         / "01-l-editoriale"
         / "01-editoriale"
@@ -789,8 +876,9 @@ def test_download_issue_all_downloads_every_article(
     result = cli._download_issue_articles(
         issue_selector="2026-04",
         config=config,
-        output_dir=config.output_dir,
+        root_output_dir=config.output_dir,
         create_audio=False,
+        create_audiobook=False,
         audio_format="m4a",
         audio_timeout=900.0,
         export_formats=("html", "txt"),
@@ -804,6 +892,8 @@ def test_download_issue_all_downloads_every_article(
     assert (
         tmp_path
         / "exports"
+        / "library"
+        / "rivista"
         / "2026-04-guaio-persiano"
         / "01-l-editoriale"
         / "01-editoriale"
@@ -812,11 +902,728 @@ def test_download_issue_all_downloads_every_article(
     assert (
         tmp_path
         / "exports"
+        / "library"
+        / "rivista"
         / "2026-04-guaio-persiano"
         / "02-analisi"
         / "02-analisi"
         / "02-analisi.html"
     ).exists()
+
+
+def test_download_issue_all_can_package_issue_audiobook(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
+    first_article = "https://www.rivistadomino.it/blog/2026/04/21/editoriale"
+    second_article = "https://www.rivistadomino.it/blog/2026/04/21/analisi"
+    cover_url = "https://cdn.example.test/guaio.jpg"
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">4/2026 Guaio persiano</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/guaio-persiano?sfoglia=1": f"""
+            <article class="product">
+              <meta property="og:image" content="{cover_url}" />
+              <div class="summary">
+                <h1 class="product_title">Guaio persiano</h1>
+                <p>4/2026 Guaio persiano La crisi spiegata</p>
+              </div>
+              <div id="tab-articles">
+                <h3>L'Editoriale</h3>
+                <a class="article_title" href="{first_article}">Editoriale</a>
+                <h3>Analisi</h3>
+                <a class="article_title" href="{second_article}">Analisi</a>
+              </div>
+            </article>
+            """,
+            first_article: (
+                "<article><h1>Editoriale</h1><p class='byline'>di Dario Fabbri</p>"
+                "<p>Corpo 1.</p></article>"
+            ),
+            second_article: (
+                "<article><h1>Analisi</h1><p class='byline'>di Federico Petroni</p>"
+                "<p>Corpo 2.</p></article>"
+            ),
+            cover_url: "jpeg-bytes",
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    packaged: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    def fake_ensure_audio_for_download(
+        raw_path: Path,
+        *,
+        output_dir: Path,
+        audio_format: str,
+        **kwargs: object,
+    ) -> str:
+        del kwargs
+        audio_path = cli._audio_output_path(
+            raw_path,
+            output_dir=output_dir,
+            audio_format=audio_format,
+        )
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"audio")
+        return "generated"
+
+    monkeypatch.setattr(cli, "_ensure_audio_for_download", fake_ensure_audio_for_download)
+
+    def fake_build_m4b(
+        output_path: Path,
+        *,
+        title: str,
+        chapters: list[object],
+        cover_image_path: Path | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Path:
+        packaged.append(
+            {
+                "output_path": output_path,
+                "title": title,
+                "chapters": chapters,
+                "cover_image_path": cover_image_path,
+                "metadata": metadata,
+            }
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("book", encoding="utf-8")
+        return output_path
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    result = cli._download_issue_articles(
+        issue_selector="2026-04",
+        config=config,
+        root_output_dir=config.output_dir,
+        create_audio=True,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+    )
+
+    assert result == 0
+    assert len(packaged) == 1
+    assert packaged[0]["title"] == "Guaio persiano"
+    assert packaged[0]["cover_image_path"] == (
+        tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano" / "cover.jpg"
+    )
+    assert packaged[0]["chapters"][0].title == "01. Editoriale (di Dario Fabbri)"
+    assert packaged[0]["chapters"][0].contributor == "Dario Fabbri"
+    metadata = packaged[0]["metadata"]
+    assert metadata is not None
+    assert metadata["artist"] == "Dario Fabbri, Federico Petroni"
+    assert metadata["album_artist"] == "Dario Fabbri, Federico Petroni"
+    assert metadata["date"] == "2026-04-21"
+    assert metadata["publisher"] == "Rivista Domino"
+    assert metadata["composer"] == "Dario Fabbri, Federico Petroni"
+    assert metadata["contributors"] == "Dario Fabbri, Federico Petroni"
+    assert metadata["description"] == "4/2026 La crisi spiegata"
+    issue_json = (
+        tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano" / "issue.json"
+    )
+    payload = json.loads(issue_json.read_text(encoding="utf-8"))
+    assert payload["cover_image_path"] == "cover.jpg"
+    assert payload["contributors"] == ["Dario Fabbri", "Federico Petroni"]
+    assert payload["articles"][0]["author"] == "Dario Fabbri"
+    assert payload["published_date"] == "2026-04-21"
+
+
+def test_download_issue_all_skips_audiobook_for_empty_issue(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/numero-vuoto/?sfoglia=1"
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">8/2022 Numero vuoto</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/numero-vuoto?sfoglia=1": """
+            <article class="product">
+              <div class="summary">
+                <h1 class="product_title">Numero vuoto</h1>
+                <p>8/2022 Numero vuoto Nessun articolo disponibile</p>
+              </div>
+              <div id="tab-articles"></div>
+            </article>
+            """,
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    def fake_build_m4b(*args: object, **kwargs: object) -> Path:
+        del args, kwargs
+        raise AssertionError("audiobook packaging should be skipped for empty issues")
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    result = cli._download_issue_articles(
+        issue_selector="2022-08",
+        config=config,
+        root_output_dir=config.output_dir,
+        create_audio=False,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+    )
+
+    assert result == 0
+    issue_json = (
+        tmp_path / "exports" / "library" / "rivista" / "2022-08-numero-vuoto" / "issue.json"
+    )
+    payload = json.loads(issue_json.read_text(encoding="utf-8"))
+    assert payload["article_count"] == 0
+    assert payload["articles"] == []
+    assert payload["chapters"] == []
+
+
+def test_issue_audiobook_falls_back_to_legacy_audio_names(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    issue_dir = output_dir / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-l-editoriale" / "01-editoriale"
+    legacy_audio = output_dir / "audio" / "2026-04-guaio-persiano" / "01-2026-04-21-editoriale.m4a"
+    article_dir.mkdir(parents=True)
+    legacy_audio.parent.mkdir(parents=True)
+    legacy_audio.write_bytes(b"audio")
+    packaged: list[dict[str, Any]] = []
+
+    def fake_build_m4b(
+        output_path: Path,
+        *,
+        title: str,
+        chapters: list[object],
+        cover_image_path: Path | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Path:
+        del title, cover_image_path, metadata
+        packaged.append({"output_path": output_path, "chapters": chapters})
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("book", encoding="utf-8")
+        return output_path
+
+    monkeypatch.setattr(cli, "build_m4b", fake_build_m4b)
+
+    cli._build_issue_audiobook(
+        cli.IssueBundlePlan(
+            issue=Issue(
+                title="Guaio persiano",
+                url="https://example.test/issue",
+                issue_code="2026-04",
+                articles=[
+                    Link(
+                        title="Editoriale",
+                        url="https://example.test/article",
+                        order=1,
+                    )
+                ],
+            ),
+            issue_dir=issue_dir,
+            article_dirs=[article_dir],
+        ),
+        root_output_dir=output_dir,
+        cover_image_path=None,
+        filename_settings=AudiobookFilenameSettings(),
+    )
+
+    assert packaged[0]["chapters"][0].audio_path == article_dir / "01-editoriale.m4a"
+
+
+def test_legacy_audio_output_path_uses_root_audio_for_feed_articles(tmp_path: Path) -> None:
+    output_dir = tmp_path / "exports"
+    article_dir = (
+        output_dir / "library" / "la-settimana-di-domino" / "2026-04-21-e-la-casa-bianca-rest-sola"
+    )
+
+    legacy_path = cli._legacy_audio_output_path(
+        article_dir,
+        root_output_dir=output_dir,
+        audio_format="m4a",
+    )
+
+    assert legacy_path == output_dir / "audio" / "2026-04-21-e-la-casa-bianca-rest-sola.m4a"
+
+
+def test_refresh_issue_metadata_updates_article_and_issue_sidecars(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
+    article_url = "https://www.rivistadomino.it/blog/2026/04/21/e-la-casa-bianca-resto-sola"
+    issue_dir = tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-la-guerra-va-male" / "01-e-la-casa-bianca-rest-sola"
+    article_dir.mkdir(parents=True)
+    write_manifest(tmp_path / "exports" / "library" / "rivista", {article_url: str(article_dir)})
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">4/2026 Guaio persiano</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/guaio-persiano?sfoglia=1": f"""
+            <article class="product">
+              <div class="summary">
+                <h1 class="product_title">Guaio persiano</h1>
+                <p>4/2026 Guaio persiano La crisi spiegata</p>
+              </div>
+              <div id="tab-articles">
+                <h3>La guerra va male</h3>
+                <a class="article_title" href="{article_url}">E la Casa Bianca restò sola</a>
+                <div class="article_byline">Lorenzo Maria Ricci</div>
+              </div>
+            </article>
+            """,
+            article_url: """
+            <html>
+              <head><meta name="author" content="Lorenzo Maria Ricci"></head>
+              <body>
+                <article>
+                  <h1>E la Casa Bianca restò sola</h1>
+                  <div class="article_byline">
+                    <a href="/blog/author/l-m-ricci/">Lorenzo Maria Ricci</a>
+                  </div>
+                  <p>Corpo.</p>
+                </article>
+              </body>
+            </html>
+            """,
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    result = cli._handle_refresh_issue_metadata(
+        config,
+        root_output_dir=config.output_dir,
+        all_issues=False,
+        issue_selector="2026-04",
+    )
+
+    assert result == 0
+    manifest = read_manifest(tmp_path / "exports" / "library" / "rivista")
+    metadata_path = Path(manifest[article_url]) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["author"] == "Lorenzo Maria Ricci"
+    issue_sidecar = json.loads((issue_dir / "issue.json").read_text(encoding="utf-8"))
+    assert issue_sidecar["contributors"] == ["Lorenzo Maria Ricci"]
+    assert issue_sidecar["articles"][0]["author"] == "Lorenzo Maria Ricci"
+    assert issue_sidecar["chapters"][0]["section"] == "La guerra va male"
+    assert issue_sidecar["chapters"][0]["author"] == "Lorenzo Maria Ricci"
+    issue_metadata = json.loads((issue_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert issue_metadata["articles"][0]["author"] == "Lorenzo Maria Ricci"
+    assert issue_metadata["chapters"][0]["section"] == "La guerra va male"
+    assert issue_metadata["chapters"][0]["title"] == "E la Casa Bianca restò sola"
+
+
+def test_refresh_issue_metadata_falls_back_to_issue_index_author(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/?sfoglia=1"
+    article_url = "https://www.rivistadomino.it/blog/2026/04/21/e-la-casa-bianca-resto-sola"
+    issue_dir = tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "02-la-guerra-va-male" / "02-2026-04-21-e-la-casa-bianca-rest-sola"
+    article_dir.mkdir(parents=True)
+    write_manifest(tmp_path / "exports" / "library" / "rivista", {article_url: str(article_dir)})
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <a href="{issue_url}">4/2026 Guaio persiano</a>
+            """,
+            "https://www.rivistadomino.it/prodotto/guaio-persiano?sfoglia=1": f"""
+            <article class="product">
+              <div class="summary">
+                <h1 class="product_title">Guaio persiano</h1>
+              </div>
+              <div id="tab-articles">
+                <h3>La guerra va male</h3>
+                <a class="article_title" href="{article_url}">E la Casa Bianca restò sola</a>
+                <div class="article_byline">Lorenzo Maria Ricci</div>
+              </div>
+            </article>
+            """,
+            article_url: """
+            <html>
+              <body>
+                <article>
+                  <h1>E la Casa Bianca restò sola</h1>
+                  <p>Corpo.</p>
+                </article>
+              </body>
+            </html>
+            """,
+        }
+    )
+    config = AppConfig(
+        output_dir=tmp_path / "exports",
+        auth_session_path=tmp_path / "missing-session.json",
+    )
+    monkeypatch.setattr(
+        cli, "WebClient", lambda loaded_config: WebClient(loaded_config, session=session)
+    )
+
+    result = cli._handle_refresh_issue_metadata(
+        config,
+        root_output_dir=config.output_dir,
+        all_issues=False,
+        issue_selector="2026-04",
+    )
+
+    assert result == 0
+    manifest = read_manifest(tmp_path / "exports" / "library" / "rivista")
+    metadata_path = Path(manifest[article_url]) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["author"] == "Lorenzo Maria Ricci"
+
+
+def test_repackage_audiobook_refreshes_metadata_before_packaging(tmp_path: Path) -> None:
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        issue_code="2026-04",
+        articles=[],
+    )
+    plan = cli.IssueBundlePlan(
+        issue=issue,
+        issue_dir=tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano",
+        article_dirs=[],
+    )
+    events: list[str] = []
+
+    class DummyClient:
+        pass
+
+    def fake_selected_issue_details_or_error(
+        client: object,
+        *,
+        all_issues: bool,
+        issue_selector: str | None,
+        output_dir: Path | None = None,
+    ) -> list[Issue]:
+        del client, all_issues, issue_selector, output_dir
+        return [issue]
+
+    def fake_refresh_downloaded_issue_metadata(
+        client: object,
+        refreshed_issue: Issue,
+        *,
+        output_dir: Path,
+    ) -> tuple[cli.IssueBundlePlan, Path | None]:
+        del client, refreshed_issue, output_dir
+        events.append("refresh")
+        return plan, tmp_path / "cover.png"
+
+    def fake_build_issue_audiobook(
+        packaged_plan: cli.IssueBundlePlan,
+        *,
+        root_output_dir: Path,
+        cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
+    ) -> Path:
+        del packaged_plan, root_output_dir, cover_image_path, filename_settings
+        events.append("package")
+        return tmp_path / "exports" / "audiobooks" / "2026-04-guaio-persiano.m4b"
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(cli, "WebClient", lambda config: DummyClient())
+    monkeypatch.setattr(
+        cli, "_selected_issue_details_or_error", fake_selected_issue_details_or_error
+    )
+    monkeypatch.setattr(
+        cli, "_refresh_downloaded_issue_metadata", fake_refresh_downloaded_issue_metadata
+    )
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+    try:
+        result = cli._handle_repackage_audiobook(
+            AppConfig(output_dir=tmp_path / "exports"),
+            root_output_dir=tmp_path / "exports",
+            all_issues=False,
+            issue_selector="2026-04",
+            filename_settings=AudiobookFilenameSettings(),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert result == 0
+    assert events == ["refresh", "package"]
+
+
+def test_refresh_issue_metadata_all_uses_only_downloaded_issues(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    downloaded_issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issues/2026-04",
+        issue_code="2026-04",
+        articles=[],
+    )
+    missing_issue = Issue(
+        title="Assalto all'Iran",
+        url="https://example.test/issues/2026-03",
+        issue_code="2026-03",
+        articles=[],
+    )
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    (output_dir / "2026-04-guaio-persiano").mkdir(parents=True)
+    refreshed: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [
+                Link(title="4/2026 Guaio persiano", url=downloaded_issue.url),
+                Link(title="3/2026 Assalto all'Iran", url=missing_issue.url),
+            ]
+
+        def discover_issue(self, url: str) -> Issue:
+            if url == downloaded_issue.url:
+                return downloaded_issue
+            if url == missing_issue.url:
+                return missing_issue
+            raise AssertionError(f"unexpected url {url}")
+
+    def fake_refresh(client: WebClient, issue: Issue, *, output_dir: Path) -> tuple[object, object]:
+        del client, output_dir
+        refreshed.append(issue.issue_code or "")
+        return object(), None
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_refresh_downloaded_issue_metadata", fake_refresh)
+
+    result = cli._handle_refresh_issue_metadata(
+        AppConfig(output_dir=tmp_path / "exports"),
+        root_output_dir=tmp_path / "exports",
+        all_issues=True,
+        issue_selector=None,
+    )
+
+    assert result == 0
+    assert refreshed == ["2026-04"]
+
+
+def test_repackage_audiobook_all_uses_only_downloaded_issues(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    downloaded_issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issues/2026-04",
+        issue_code="2026-04",
+        articles=[],
+    )
+    missing_issue = Issue(
+        title="Assalto all'Iran",
+        url="https://example.test/issues/2026-03",
+        issue_code="2026-03",
+        articles=[],
+    )
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    issue_dir = output_dir / "2026-04-guaio-persiano"
+    issue_dir.mkdir(parents=True)
+    packaged: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [
+                Link(title="4/2026 Guaio persiano", url=downloaded_issue.url),
+                Link(title="3/2026 Assalto all'Iran", url=missing_issue.url),
+            ]
+
+        def discover_issue(self, url: str) -> Issue:
+            if url == downloaded_issue.url:
+                return downloaded_issue
+            if url == missing_issue.url:
+                return missing_issue
+            raise AssertionError(f"unexpected url {url}")
+
+    def fake_refresh(
+        client: WebClient,
+        issue: Issue,
+        *,
+        output_dir: Path,
+    ) -> tuple[cli.IssueBundlePlan, Path | None]:
+        del client, output_dir
+        return cli.IssueBundlePlan(issue=issue, issue_dir=issue_dir, article_dirs=[]), None
+
+    def fake_build_issue_audiobook(
+        plan: cli.IssueBundlePlan,
+        *,
+        root_output_dir: Path,
+        cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
+    ) -> Path:
+        del root_output_dir, cover_image_path, filename_settings
+        packaged.append(plan.issue.issue_code or "")
+        return issue_dir / "book.m4b"
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_refresh_downloaded_issue_metadata", fake_refresh)
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+
+    result = cli._handle_repackage_audiobook(
+        AppConfig(output_dir=tmp_path / "exports"),
+        root_output_dir=tmp_path / "exports",
+        all_issues=True,
+        issue_selector=None,
+        filename_settings=AudiobookFilenameSettings(),
+    )
+
+    assert result == 0
+    assert packaged == ["2026-04"]
+
+
+def test_audiobook_output_path_uses_configurable_filename_template() -> None:
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        issue_code="2026-04",
+        articles=[],
+    )
+
+    output_path = cli._audiobook_output_path(
+        Path("/tmp/audiobooks"),
+        issue,
+        settings=AudiobookFilenameSettings(
+            magazine_title="Rivista Domino",
+            separator="-",
+            format_template="{magazine_slug}{sep}anno-{year}{sep}numero-{number}{sep}{title_slug}",
+        ),
+    )
+
+    assert output_path.name == "rivista-domino-anno-2026-numero-04-guaio-persiano.m4b"
+
+
+def test_rename_audiobooks_uses_embedded_metadata(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    library_dir = tmp_path / "library"
+    library_dir.mkdir()
+    old_path = library_dir / "legacy-name.m4b"
+    old_path.write_bytes(b"book")
+
+    monkeypatch.setattr(
+        cli,
+        "read_audiobook_tags",
+        lambda path: {"title": "Guaio persiano", "date": "2026-04-21"} if path == old_path else {},
+    )
+
+    result = cli._handle_rename_audiobooks(
+        AppConfig(output_dir=tmp_path / "exports"),
+        paths=[],
+        library_dir=library_dir,
+        output_dir=tmp_path / "exports",
+        filename_settings=AudiobookFilenameSettings(
+            magazine_title="Domino",
+            separator="-",
+            format_template="{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug}",
+        ),
+        dry_run=False,
+    )
+
+    assert result == 0
+    assert not old_path.exists()
+    assert (library_dir / "domino-2026-04-guaio-persiano.m4b").exists()
+
+
+def test_rename_audiobooks_allows_case_only_rename(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    library_dir = tmp_path / "library"
+    library_dir.mkdir()
+    old_path = library_dir / "domino-2026-03-assalto-all-iran.m4b"
+    old_path.write_bytes(b"book")
+
+    monkeypatch.setattr(
+        cli,
+        "read_audiobook_tags",
+        lambda path: (
+            {"title": "Assalto all Iran", "date": "2026-03-01"} if path == old_path else {}
+        ),
+    )
+
+    result = cli._handle_rename_audiobooks(
+        AppConfig(output_dir=tmp_path / "exports"),
+        paths=[old_path],
+        library_dir=None,
+        output_dir=tmp_path / "exports",
+        filename_settings=AudiobookFilenameSettings(
+            magazine_title="Domino",
+            separator="-",
+            format_template="{magazine}{sep}{year}{sep}{number}{sep}{title_slug}",
+        ),
+        dry_run=False,
+    )
+
+    assert result == 0
+    assert (library_dir / "Domino-2026-03-assalto-all-iran.m4b").exists()
+    names = sorted(path.name for path in library_dir.iterdir())
+    assert names == ["Domino-2026-03-assalto-all-iran.m4b"]
+
+
+def test_resolved_issue_article_dirs_prefers_manifest_paths_for_legacy_issue_tree(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "exports"
+    legacy_dir = (
+        output_dir
+        / "2026-04-guaio-persiano"
+        / "01-l-editoriale"
+        / "01-2026-04-21-cosa-fare-a-teheran-quando-sei-morto"
+    )
+    legacy_dir.mkdir(parents=True)
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        issue_code="2026-04",
+        articles=[
+            Link(
+                title="Cosa fare a Teheran quando sei morto",
+                url="https://example.test/article",
+                order=1,
+            )
+        ],
+    )
+    write_manifest(output_dir, {issue.articles[0].url: str(legacy_dir)})
+
+    resolved = cli._resolved_issue_article_dirs(
+        issue,
+        output_dir=output_dir,
+        planned_dirs={
+            issue.articles[0].url: (
+                output_dir
+                / "2026-04-guaio-persiano"
+                / "01-l-editoriale"
+                / "01-cosa-fare-a-teheran-quando-sei-morto"
+            )
+        },
+    )
+
+    assert resolved == [legacy_dir]
 
 
 def test_download_issue_all_rejects_ambiguous_selectors(capsys: CaptureFixture[str]) -> None:
@@ -906,7 +1713,7 @@ def test_explicit_download_reuses_existing_manifest_dir_and_backfills_audio(
     assert audio_calls == [
         (
             existing_dir / "001-editoriale.txt",
-            tmp_path / "exports" / "audio" / "001-editoriale.m4a",
+            existing_dir / "001-editoriale.m4a",
         )
     ]
 
@@ -977,7 +1784,7 @@ def test_explicit_download_uses_existing_exports_when_only_audio_is_missing(
     assert audio_calls == [
         (
             existing_dir / "001-editoriale.txt",
-            tmp_path / "exports" / "audio" / "001-editoriale.m4a",
+            existing_dir / "001-editoriale.m4a",
         )
     ]
 
@@ -1040,7 +1847,7 @@ def test_explicit_download_reuses_existing_audio_without_force(
     assert result == 0
     assert session.gets == []
     assert audio_calls == []
-    assert audio_path.read_text(encoding="utf-8") == "existing audio"
+    assert (existing_dir / "001-editoriale.m4a").read_text(encoding="utf-8") == "existing audio"
     assert "✓ 001-editoriale" in captured.out
     assert captured.out.count("reused") == 2
     assert "if this audio file is corrupt" not in captured.err
@@ -1102,8 +1909,9 @@ def test_explicit_download_force_regenerates_existing_audio(
     )
 
     assert result == 0
-    assert audio_calls == [(existing_dir / "001-editoriale.txt", audio_path)]
-    assert audio_path.read_text(encoding="utf-8") == "new audio"
+    expected_audio_call = (existing_dir / "001-editoriale.txt", existing_dir / "001-editoriale.m4a")
+    assert audio_calls == [expected_audio_call]
+    assert (existing_dir / "001-editoriale.m4a").read_text(encoding="utf-8") == "new audio"
 
 
 def test_explicit_download_force_rewrites_existing_export(
@@ -1164,11 +1972,11 @@ def test_main_help_explains_catalog_without_redundant_aliases() -> None:
 
 
 def test_catalog_title_cleanup_does_not_strip_europei() -> None:
-    month, title, synopsis = cli._issue_summary_parts(
+    issue_code, title, synopsis = cli._issue_summary_parts(
         "8/2025 Europei brava gente 7,50 € - 10,00 € Fascia di prezzo: da 7,50 € a 10,00 € Sinossi."
     )
 
-    assert month == "2025-08"
+    assert issue_code == "2025-08"
     assert title == "Europei brava gente"
     assert synopsis == "Sinossi."
 
@@ -1195,6 +2003,26 @@ def test_article_titles_do_not_style_when_color_is_disabled(monkeypatch: MonkeyP
     monkeypatch.setenv("NO_COLOR", "1")
 
     assert cli._style_article_title("Titolo") == "Titolo"
+
+
+def test_audio_progress_step_plain_output_suppresses_aiff_growth(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+
+    with cli._audio_progress_step("Generating audio article.m4a") as progress:
+        progress("chunking", None, 4)
+        progress("aiff_growth", None, 4096)
+        progress("retrying", None, 1)
+        progress("converting", None, None)
+
+    captured = capsys.readouterr()
+    assert "→ Generating audio article.m4a..." in captured.err
+    assert "chunks: 4" in captured.err
+    assert "retry: attempt 2" in captured.err
+    assert "converting: final audio format" in captured.err
+    assert "aiff:" not in captured.err
+    assert "✓ Generating audio article.m4a" in captured.err
 
 
 def test_folder_names_match_feed_and_issue_conventions() -> None:
@@ -1321,6 +2149,74 @@ def test_extract_article_reads_byline_author() -> None:
     assert article.author == "Dario Fabbri"
 
 
+def test_extract_article_prefers_meta_author_over_site_header_text() -> None:
+    article = extract_article(
+        """
+        <html>
+          <head>
+            <meta name="author" content="Lorenzo Maria Ricci">
+            <title>Titolo - Rivista Domino</title>
+          </head>
+          <body>
+            <header><span>diretta da Dario Fabbri</span></header>
+            <article>
+              <h1>Titolo</h1>
+              <div class="article_byline">
+                <a href="/blog/author/l-m-ricci/">Lorenzo Maria Ricci</a>
+              </div>
+              <p>Corpo.</p>
+            </article>
+          </body>
+        </html>
+        """,
+        page_url="https://example.test/articolo/",
+        content_selectors=("article",),
+    )
+
+    assert article.author == "Lorenzo Maria Ricci"
+
+
+def test_extract_article_reads_adjacent_article_byline() -> None:
+    article = extract_article(
+        """
+        <article>
+          <h1>E la Casa Bianca resto sola</h1>
+          <div class="article_byline">
+            <a href="/blog/author/l-m-ricci/">Lorenzo Maria Ricci</a>
+          </div>
+          <p>Corpo.</p>
+        </article>
+        """,
+        page_url="https://example.test/articolo/",
+        content_selectors=("article",),
+    )
+
+    assert article.author == "Lorenzo Maria Ricci"
+
+
+def test_extract_article_accepts_initials_in_explicit_author_fields() -> None:
+    article = extract_article(
+        """
+        <html>
+          <head>
+            <meta name="author" content="Z. Goggi">
+          </head>
+          <body>
+            <article>
+              <h1>Iran, ennesimo equivoco</h1>
+              <div class="article_byline"><a href="/blog/author/z-goggi/">Z. Goggi</a></div>
+              <p><em>Libro dei mutamenti</em> non e autore.</p>
+            </article>
+          </body>
+        </html>
+        """,
+        page_url="https://example.test/articolo/",
+        content_selectors=("article",),
+    )
+
+    assert article.author == "Z. Goggi"
+
+
 def test_extract_article_normalizes_domino_directed_by_author() -> None:
     article = extract_article(
         "<article><h1>Titolo</h1><p>diretta da Dario Fabbri</p><p>Corpo.</p></article>",
@@ -1329,6 +2225,19 @@ def test_extract_article_normalizes_domino_directed_by_author() -> None:
     )
 
     assert article.author == "Dario Fabbri"
+
+
+def test_extract_article_removes_domino_site_suffix_from_title() -> None:
+    article = extract_article(
+        (
+            "<html><head><title>Dove Mosca regna - Rivista Domino</title></head>"
+            "<body><main><p>Corpo.</p></main></body></html>"
+        ),
+        page_url="https://example.test/articolo/",
+        content_selectors=("article", "main"),
+    )
+
+    assert article.title == "Dove Mosca regna"
 
 
 def test_article_text_document_omits_url_and_formats_spoken_header() -> None:
@@ -1418,6 +2327,29 @@ def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
     feed_args = parser.parse_args(["sync-feed", "--no-audio"])
     assert cli._audio_options(feed_args, config).create is False
 
+    audiobook_no_audio_args = parser.parse_args(
+        ["download", "--issue", "2026-04", "--all", "--audiobook", "--no-audio"]
+    )
+    audiobook_no_audio_options = cli._audio_options(audiobook_no_audio_args, config)
+    assert audiobook_no_audio_options.create is False
+
+
+def test_audiobook_request_defaults_to_config_and_allows_cli_override() -> None:
+    parser = cli.build_parser()
+    config = AppConfig(audiobook_auto=True)
+
+    sync_args = parser.parse_args(["sync-magazine"])
+    assert cli._audiobook_requested(sync_args, config) is True
+
+    sync_no_audio_args = parser.parse_args(["sync-magazine", "--no-audio"])
+    assert cli._audiobook_requested(sync_no_audio_args, config) is False
+
+    explicit_args = parser.parse_args(["sync-magazine", "--audiobook"])
+    assert cli._audiobook_requested(explicit_args, AppConfig()) is True
+
+    explicit_no_audio_args = parser.parse_args(["sync-magazine", "--audiobook", "--no-audio"])
+    assert cli._audiobook_requested(explicit_no_audio_args, AppConfig()) is False
+
     download_args = parser.parse_args(
         [
             "download",
@@ -1470,7 +2402,7 @@ def test_sync_feed_output_shows_destination_folder_and_article_paths(
 
     result = cli._download_new_articles(
         [Link(title="Che succede in Medio Oriente", url=article_url)],
-        config=AppConfig(output_dir=tmp_path),
+        config=AppConfig(output_dir=tmp_path, verbose=True),
         output_dir=tmp_path / "la-settimana-di-domino",
         create_audio=False,
         audio_format="m4a",
@@ -1521,7 +2453,7 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
 
     result = cli._download_new_articles(
         [Link(title="Che succede in Medio Oriente", url=article_url)],
-        config=AppConfig(output_dir=tmp_path),
+        config=AppConfig(output_dir=tmp_path, verbose=True),
         output_dir=output_dir,
         create_audio=True,
         audio_format="m4a",
@@ -1641,6 +2573,121 @@ def test_sync_feed_force_redownloads_and_forces_audio_regeneration(
     assert speak_kwargs[0]["force"] is True
 
 
+def test_sync_magazine_uses_tabular_output(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    issue_link = Link(title="4/2026 Guaio persiano", url="https://example.test/issue")
+    article_link = Link(
+        title="E la Casa Bianca restò sola",
+        url="https://example.test/article",
+        group="La guerra va male",
+        order=2,
+    )
+    issue = Issue(
+        title="Guaio persiano",
+        url=issue_link.url,
+        issue_code="2026-04",
+        articles=[article_link],
+    )
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            assert url == issue_link.url
+            return issue
+
+        def download_article(self, url: str) -> Article:
+            assert url == article_link.url
+            return Article(
+                title=article_link.title,
+                url=url,
+                html="<article><h1>E la Casa Bianca restò sola</h1><p>Corpo.</p></article>",
+                text="Corpo.",
+                author="Lorenzo Maria Ricci",
+            )
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_ensure_issue_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_write_issue_sidecar",
+        lambda *args, **kwargs: tmp_path / "exports" / "library" / "rivista" / "issue.json",
+    )
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", verbose=False, magazine_title="Domino"),
+        create_audio=False,
+        create_audiobook=False,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "Domino" in captured.out
+    assert "article" in captured.out
+    assert "issue: Guaio persiano" in captured.out
+    assert "written" in captured.out
+    assert "downloaded:" not in captured.out
+
+
+def test_sync_magazine_skips_empty_issue_audiobook_plans(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    issue_link = Link(
+        title="8/2022 Numero vuoto",
+        url="https://www.rivistadomino.it/prodotto/numero-vuoto?sfoglia=1",
+    )
+    issue = Issue(
+        title="Numero vuoto",
+        url=issue_link.url,
+        issue_code="2022-08",
+        articles=[],
+    )
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            assert url == issue_link.url
+            return issue
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", lambda *args, **kwargs: 0)
+
+    def fake_build_issue_audiobook(*args: object, **kwargs: object) -> Path:
+        del args, kwargs
+        raise AssertionError("empty issues should not be packaged as audiobooks")
+
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", audiobook_auto=True),
+        create_audio=False,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    assert result == 0
+
+
 def test_audio_timeout_must_be_positive() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["download", "https://example.test/a", "--audio-timeout", "0"])
@@ -1724,6 +2771,20 @@ def test_indeterminate_bar_bounces_inside_width() -> None:
     assert cli._indeterminate_bar(14, width=10, chunk_width=3) == "[███       ]"
 
 
+def test_render_progress_line_truncates_long_label(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr("get_my_domino.cli._terminal_columns", lambda: 60)
+
+    line = cli._render_progress_line(
+        "Generating audio 2026-03-13-conflitto-in-medio-oriente-turchia-afghanistan-vs-pakistan",
+        index=0,
+        detail="convert: final audio format",
+    )
+
+    assert "\n" not in line
+    assert len(line) <= 60
+    assert "..." in line
+
+
 def test_speak_paths_uses_requested_audio_format(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
@@ -1755,6 +2816,8 @@ def test_speak_paths_uses_requested_audio_format(
         return output
 
     monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+    clock = iter([0.0, 12.0])
+    monkeypatch.setattr("get_my_domino.cli.time.monotonic", lambda: next(clock))
 
     result = cli._speak_paths(
         [text_path],
@@ -1766,9 +2829,20 @@ def test_speak_paths_uses_requested_audio_format(
 
     captured = capsys.readouterr()
     assert result == 0
-    audio_path = tmp_path / "exports" / "audio" / "2026-04-guaio-persiano" / "01-editoriale.mp3"
+    audio_path = (
+        tmp_path
+        / "exports"
+        / "2026-04-guaio-persiano"
+        / "01-l-editoriale"
+        / "01-editoriale"
+        / "01-editoriale.mp3"
+    )
     assert calls == [(text_path, audio_path, "Siri Voice 2", "mp3", 321.0)]
-    assert str(audio_path) in captured.out
+    assert "article" in captured.out
+    assert "01-editoriale" in captured.out
+    assert "off" in captured.out
+    assert "generated" in captured.out
+    assert "00:12" in captured.out
 
 
 def test_download_continues_after_audio_failure_and_reports_summary(
@@ -1888,7 +2962,7 @@ def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
 
     assert status == "generated"
     assert calls == [speech_text]
-    assert output == tmp_path / "exports" / "audio" / "001-editoriale.m4a"
+    assert output == article_dir / "001-editoriale.m4a"
 
 
 def test_codex_speech_normalizer_invokes_cli_without_printing_article(
