@@ -5,8 +5,9 @@ import fcntl
 import json
 import subprocess
 import sys
+from concurrent.futures import Future
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import pytest
 import requests
@@ -3627,6 +3628,23 @@ class FakeChunkSiblingProcess:
 
     def kill(self) -> None:
         self.killed = True
+
+
+class FakeStuckFuture:
+    def cancelled(self) -> bool:
+        return False
+
+    def cancel(self) -> bool:
+        return False
+
+    def result(self, timeout: float | None = None) -> None:
+        del timeout
+        raise TimeoutError
+
+
+def test_wait_for_chunk_futures_ignores_future_timeout() -> None:
+    future = cast(Future[None], FakeStuckFuture())
+    audio_module._wait_for_chunk_futures({future: Path("chunk-001.aiff")})
 
 
 def test_synthesize_audio_times_out_and_removes_temporary_aiff(
