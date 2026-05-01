@@ -39,7 +39,7 @@ audio_format = "m4a"
 audio_timeout = 900
 audio_chunked = true
 audio_chunk_chars = 2500
-audio_chunk_concurrency = 3
+audio_chunk_concurrency = 4
 audio_chunk_retries = 2
 audio_stall_timeout = 45
 

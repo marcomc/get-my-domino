@@ -2790,6 +2790,7 @@ def _handle_sync(
                 article_dirs=issue_article_dirs,
                 cover_image_path=cover_image_path,
             )
+            issue_audio_result = 0
             if create_audio and issue_article_dirs:
                 issue_audio_result = _speak_paths(
                     issue_article_dirs,
@@ -2815,7 +2816,7 @@ def _handle_sync(
                 root_output_dir=root_output_dir,
                 config=config,
                 create_audiobook=create_audiobook,
-                audio_result=audio_result,
+                audio_result=issue_audio_result,
                 cover_image_path=cover_image_path,
                 filename_settings=effective_filename_settings,
             )
@@ -2829,6 +2830,7 @@ def _handle_sync(
             article_dirs=issue_article_dirs,
             cover_image_path=cover_image_path,
         )
+        issue_audio_result = 0
         if create_audio and issue_article_dirs:
             issue_audio_result = _speak_paths(
                 issue_article_dirs,
@@ -2854,7 +2856,7 @@ def _handle_sync(
             root_output_dir=root_output_dir,
             config=config,
             create_audiobook=create_audiobook,
-            audio_result=audio_result,
+            audio_result=issue_audio_result,
             cover_image_path=cover_image_path,
             filename_settings=effective_filename_settings,
         )
@@ -3303,23 +3305,14 @@ def _ensure_audio(
         return "reused", output_path
     speech_source_path = text_path
     if speech_options is not None and speech_options.enabled:
-        best_effort_speech_options = replace(
-            speech_options,
-            fallback=True,
-            timeout=min(speech_options.timeout, 120.0),
-        )
         try:
             with _progress_step(f"Preparing speech text {text_path.name}"):
                 speech_source_path = ensure_speech_text(
                     text_path,
-                    options=best_effort_speech_options,
+                    options=speech_options,
                 )
         except SpeechNormalizeError as exc:
-            print(
-                f"↻ Speech normalization failed for {text_path.name}; using original text ({exc})",
-                file=sys.stderr,
-            )
-            speech_source_path = text_path
+            raise AudioError(str(exc)) from exc
     with _audio_progress_step(f"Generating audio {output_path.name}") as progress:
         synthesize_audio(
             speech_source_path,

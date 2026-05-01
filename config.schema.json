@@ -114,7 +114,7 @@
     "audio_chunk_concurrency": {
       "type": "integer",
       "minimum": 1,
-      "default": 3
+      "default": 4
     },
     "audio_chunk_retries": {
       "type": "integer",

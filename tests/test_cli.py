@@ -2951,6 +2951,115 @@ def test_sync_magazine_packages_completed_issues_during_resume(
     ]
 
 
+def test_sync_magazine_packages_later_issue_after_earlier_audio_failure(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    output_dir.mkdir(parents=True)
+    issue_one_link = Link(title="2026-04 Guaio persiano", url="https://example.test/issue-one")
+    issue_two_link = Link(title="2026-03 Assalto all Iran", url="https://example.test/issue-two")
+    article_one = Link(
+        title="Primo capitolo",
+        url="https://example.test/article-one",
+        group="Sezione",
+        order=1,
+    )
+    article_two = Link(
+        title="Secondo capitolo",
+        url="https://example.test/article-two",
+        group="Sezione",
+        order=1,
+    )
+    issue_one = Issue(
+        title="Guaio persiano",
+        url=issue_one_link.url,
+        issue_code="2026-04",
+        articles=[article_one],
+    )
+    issue_two = Issue(
+        title="Assalto all Iran",
+        url=issue_two_link.url,
+        issue_code="2026-03",
+        articles=[article_two],
+    )
+    issue_one_dir = output_dir / "2026-04-guaio-persiano" / "01-sezione" / "01-primo-capitolo"
+    issue_two_dir = output_dir / "2026-03-assalto-all-iran" / "01-sezione" / "01-secondo-capitolo"
+    issue_one_dir.mkdir(parents=True)
+    issue_two_dir.mkdir(parents=True)
+    (issue_one_dir / "01-primo-capitolo.txt").write_text("Testo", encoding="utf-8")
+    (issue_two_dir / "01-secondo-capitolo.txt").write_text("Testo", encoding="utf-8")
+    write_manifest(
+        output_dir,
+        {
+            article_one.url: str(issue_one_dir),
+            article_two.url: str(issue_two_dir),
+        },
+    )
+    events: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_one_link, issue_two_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            if url == issue_one_link.url:
+                return issue_one
+            if url == issue_two_link.url:
+                return issue_two
+            raise AssertionError(url)
+
+    def fake_speak_paths(paths: list[Path], **kwargs: object) -> int:
+        del kwargs
+        if paths == [issue_one_dir]:
+            events.append("speak:2026-04")
+            return 1
+        if paths == [issue_two_dir]:
+            events.append("speak:2026-03")
+            (issue_two_dir / "01-secondo-capitolo.m4a").write_bytes(b"audio-two")
+            return 0
+        raise AssertionError(paths)
+
+    def fake_build_issue_audiobook(
+        plan: cli.IssueBundlePlan,
+        *,
+        root_output_dir: Path,
+        config: AppConfig,
+        cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
+    ) -> Path:
+        del root_output_dir, config, cover_image_path, filename_settings
+        events.append(f"package:{plan.issue.issue_code}")
+        return tmp_path / f"{plan.issue.issue_code}.m4b"
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", fake_speak_paths)
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+    monkeypatch.setattr(cli, "_ensure_issue_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_write_issue_sidecar", lambda *args, **kwargs: tmp_path / "issue.json"
+    )
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", audiobook_auto=True),
+        create_audio=True,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    assert result == 1
+    assert events == [
+        "speak:2026-04",
+        "speak:2026-03",
+        "package:2026-03",
+    ]
+
+
 def test_sync_magazine_packages_existing_issue_audio_without_generating_audio(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -3432,8 +3541,8 @@ def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
     ) -> Path:
         assert source == raw_text
         assert options.enabled is True
-        assert options.fallback is True
-        assert options.timeout == 120.0
+        assert options.fallback is False
+        assert options.timeout == 900.0
         speech_text.write_text("Titolo\n\nCorpo normalizzato.", encoding="utf-8")
         return speech_text
 
@@ -3474,8 +3583,8 @@ def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
     assert output == article_dir / "001-editoriale.m4a"
 
 
-def test_ensure_audio_falls_back_to_original_text_on_normalizer_failure(
-    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+def test_ensure_audio_reports_normalizer_failure_when_fallback_is_disabled(
+    tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     article_dir = tmp_path / "exports" / "001-editoriale"
     article_dir.mkdir(parents=True)
@@ -3505,6 +3614,61 @@ def test_ensure_audio_falls_back_to_original_text_on_normalizer_failure(
     monkeypatch.setattr(cli, "ensure_speech_text", fake_ensure_speech_text)
     monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
 
+    with pytest.raises(audio_module.AudioError, match="codex normalizer failed with exit code 1"):
+        cli._ensure_audio(
+            article_dir,
+            output_dir=tmp_path / "exports",
+            voice=None,
+            audio_format="m4a",
+            timeout=900.0,
+            speech_options=cli.SpeechNormalizeOptions(
+                enabled=True,
+                agent="codex",
+                command="codex",
+                model="",
+                timeout=900.0,
+                force=False,
+                fallback=False,
+                prompt_path=None,
+                diff=False,
+            ),
+        )
+
+    assert calls == []
+
+
+def test_ensure_audio_uses_original_text_when_normalizer_returns_fallback_path(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    article_dir = tmp_path / "exports" / "001-editoriale"
+    article_dir.mkdir(parents=True)
+    raw_text = article_dir / "001-editoriale.txt"
+    raw_text.write_text("Titolo\n\nCorpo.", encoding="utf-8")
+    calls: list[Path] = []
+
+    def fake_ensure_speech_text(
+        source: Path,
+        *,
+        options: cli.SpeechNormalizeOptions,
+    ) -> Path:
+        assert source == raw_text
+        assert options.fallback is True
+        assert options.timeout == 321.0
+        return raw_text
+
+    def fake_synthesize_audio(
+        source: Path,
+        output: Path,
+        **kwargs: object,
+    ) -> Path:
+        del kwargs
+        calls.append(source)
+        output.write_text("audio", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(cli, "ensure_speech_text", fake_ensure_speech_text)
+    monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+
     status, output = cli._ensure_audio(
         article_dir,
         output_dir=tmp_path / "exports",
@@ -3516,20 +3680,17 @@ def test_ensure_audio_falls_back_to_original_text_on_normalizer_failure(
             agent="codex",
             command="codex",
             model="",
-            timeout=900.0,
+            timeout=321.0,
             force=False,
-            fallback=False,
+            fallback=True,
             prompt_path=None,
             diff=False,
         ),
     )
 
-    captured = capsys.readouterr()
-
     assert status == "generated"
     assert calls == [raw_text]
     assert output == article_dir / "001-editoriale.m4a"
-    assert "using original text" in captured.err
 
 
 def test_codex_speech_normalizer_invokes_cli_without_printing_article(
