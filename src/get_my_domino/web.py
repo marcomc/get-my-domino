@@ -14,9 +14,22 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from .config import AppConfig
-from .extract import article_date_from_url, extract_article, extract_links, issue_code_from_text
+from .extract import (
+    article_date_from_url,
+    extract_article,
+    extract_links,
+    issue_code_from_text,
+    normalize_url,
+)
 from .models import Article, Issue, Link
 from .session_store import SessionStoreError, load_cookies, save_cookies
+
+_CURRENCY_PATTERN = r"(?:€|\bEUR\b)"
+_PRICE_PATTERN = (
+    rf"(?:\d+(?:[.,]\d{{1,2}})?\s*{_CURRENCY_PATTERN}|"
+    rf"{_CURRENCY_PATTERN}\s*\d+(?:[.,]\d{{1,2}})?)"
+)
+_GENERIC_ISSUE_CTA_TITLES = frozenset({"acquista", "leggi tutto", "leggi", "sfoglia", "vedi"})
 
 
 class FetchError(RuntimeError):
@@ -85,12 +98,7 @@ class WebClient:
 
     def discover_issues(self) -> list[Link]:
         html = self.fetch_text(self.config.magazine_index_url)
-        return extract_links(
-            html,
-            page_url=self.config.magazine_index_url,
-            include_patterns=self.config.issue_link_patterns,
-            skip_patterns=self.config.skip_link_patterns,
-        )
+        return self._extract_issue_links(html, page_url=self.config.magazine_index_url)
 
     def discover_articles(self, issue_url: str) -> list[Link]:
         return self.discover_issue(issue_url).articles
@@ -279,6 +287,72 @@ class WebClient:
             return urljoin(page_url, str(anchor.get("href")))
         return None
 
+    def _extract_issue_links(self, html: str, *, page_url: str) -> list[Link]:
+        soup = BeautifulSoup(html, "html.parser")
+        ordered_urls: list[str] = []
+        candidates_by_url: dict[str, list[str]] = {}
+        for anchor in soup.find_all("a", href=True):
+            if not isinstance(anchor, Tag):
+                continue
+            href = str(anchor.get("href", "")).strip()
+            absolute_url = normalize_url(urljoin(page_url, href))
+            haystack = f"{href} {absolute_url}"
+            if _matches_any(haystack, self.config.skip_link_patterns):
+                continue
+            if self.config.issue_link_patterns and not _matches_any(
+                haystack, self.config.issue_link_patterns
+            ):
+                continue
+            texts = [
+                candidate
+                for candidate in self._issue_listing_candidates(anchor)
+                if candidate and not _matches_any(candidate, self.config.skip_link_patterns)
+            ]
+            if not texts:
+                continue
+            if absolute_url not in candidates_by_url:
+                ordered_urls.append(absolute_url)
+                candidates_by_url[absolute_url] = []
+            for candidate in texts:
+                if candidate not in candidates_by_url[absolute_url]:
+                    candidates_by_url[absolute_url].append(candidate)
+
+        issues: list[Link] = []
+        for absolute_url in ordered_urls:
+            best_candidate = max(
+                candidates_by_url[absolute_url],
+                key=_issue_listing_candidate_score,
+            )
+            title, summary = _issue_listing_parts(best_candidate)
+            issues.append(Link(title=title, url=absolute_url, summary=summary))
+        return issues
+
+    def _issue_listing_candidates(self, anchor: Tag) -> list[str]:
+        candidates: list[str] = []
+        direct_text = _clean_text(anchor.get_text(" ", strip=True))
+        if direct_text:
+            candidates.append(direct_text)
+        for attribute in ("aria-label", "title"):
+            value = _clean_text(str(anchor.get(attribute, "")))
+            if value:
+                candidates.append(value)
+        for parent in anchor.parents:
+            if not isinstance(parent, Tag):
+                continue
+            class_names = parent.get("class")
+            if not isinstance(class_names, list):
+                continue
+            if not any(
+                any(token in class_name.lower() for token in ("product", "woocommerce", "card"))
+                for class_name in class_names
+            ):
+                continue
+            container_text = _clean_text(parent.get_text(" ", strip=True))
+            if container_text:
+                candidates.append(container_text)
+            break
+        return candidates
+
     def _extract_issue(self, html: str, *, page_url: str) -> Issue:
         soup = BeautifulSoup(html, "html.parser")
         title_element = soup.select_one("h1.product_title, h1.entry-title, h1")
@@ -390,6 +464,56 @@ class WebClient:
         cleaned = re.sub(r"\bSfoglia la rivista\b.*$", "", cleaned, flags=re.IGNORECASE)
         cleaned = " ".join(cleaned.split())
         return cleaned or None
+
+
+def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
+    lowered = value.lower()
+    return any(pattern.lower() in lowered for pattern in patterns)
+
+
+def _clean_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _issue_listing_candidate_score(value: str) -> tuple[int, int]:
+    lowered = value.lower()
+    score = 0
+    if issue_code_from_text(value) is not None:
+        score += 100
+    if any(
+        lowered == label or lowered.startswith(label + " ") for label in _GENERIC_ISSUE_CTA_TITLES
+    ):
+        score -= 100
+    if re.search(_PRICE_PATTERN, value, flags=re.IGNORECASE):
+        score += 25
+    return (score, len(value))
+
+
+def _issue_listing_parts(value: str) -> tuple[str, str | None]:
+    cleaned = _clean_text(value)
+    first_price = re.search(_PRICE_PATTERN, cleaned, flags=re.IGNORECASE)
+    if first_price is None:
+        return cleaned, None
+    title = cleaned[: first_price.start()].strip(" -–—:")
+    summary = _strip_price_text(cleaned[first_price.end() :]).strip(" -–—:")
+    return title or cleaned, summary or None
+
+
+def _strip_price_text(value: str) -> str:
+    without_price_range = re.sub(
+        rf"Fascia di prezzo:\s*da\s*{_PRICE_PATTERN}\s*a\s*{_PRICE_PATTERN}",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    without_price_range = re.sub(
+        rf"{_PRICE_PATTERN}\s*[-–—]\s*{_PRICE_PATTERN}",
+        "",
+        without_price_range,
+        flags=re.IGNORECASE,
+    )
+    without_prices = re.sub(_PRICE_PATTERN, "", without_price_range, flags=re.IGNORECASE)
+    return " ".join(without_prices.replace(" - ", " ").split())
 
 
 def fetch_text(url: str, config: AppConfig) -> str:

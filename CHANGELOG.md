@@ -20,6 +20,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   article, `4` jobs completed in `86s` versus `105s` at `3`, while higher
   values stopped improving.
 
+### Metadata
+
+- Speech normalization now records a `speech_normalization` block in each
+  article `metadata.json`, including prompt path, prompt version, prompt hash,
+  normalizer command/model, source-text hash, output path, and normalization
+  timestamp.
+- Existing `.speech.txt` files are now invalidated automatically when the
+  source text or configured prompt template changes, instead of relying only on
+  file modification times.
+
+### Catalog
+
+- Subscriber issue discovery now prefers descriptive `my_domino` product-card
+  titles over generic CTA labels such as `Sfoglia`, while preserving listing
+  synopsis text separately for catalog output.
+
+### Release
+
+- Kept release management manual for now instead of introducing hosted release
+  automation.
+
 ## [0.1.2] - 2026-04-30
 
 ### Changed

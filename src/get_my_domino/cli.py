@@ -1041,7 +1041,8 @@ def _print_issue_index(issues: list[Link]) -> None:
         print("No issues found.")
         return
     for index, issue in enumerate(issues, start=1):
-        issue_code, title, synopsis = _issue_summary_parts(issue.title)
+        issue_code, title, fallback_synopsis = _issue_summary_parts(issue.title)
+        synopsis = issue.summary or fallback_synopsis
         display_issue_code = issue_code or "unknown"
         print(f"{display_issue_code}  {title}")
         if synopsis:

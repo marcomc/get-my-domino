@@ -59,6 +59,14 @@ If Domino changes login markup, these methods are the first place to inspect:
 - `WebClient._form_payload()`
 - `WebClient._contains_login_form()`
 
+As of May 1, 2026, the public FAQ still documents a same-credentials login for
+the reader/app and then says those credentials are remembered for subsequent
+use. That is consistent with the current cookie/session reuse implementation
+and does not provide evidence of a separate renewable refresh-token flow.
+If Domino later ships an app API, re-check for bearer tokens, token-expiry
+claims, refresh endpoints, or other renewable-auth markers before changing the
+session model.
+
 ## Issue Discovery
 
 Issue discovery starts from the subscriber `my_domino` page, not from a public
@@ -67,7 +75,7 @@ catalog.
 Implementation:
 
 - `WebClient.discover_issues()`
-- `extract.extract_links()`
+- `WebClient._extract_issue_links()`
 
 Current assumptions:
 
@@ -75,12 +83,17 @@ Current assumptions:
 - the issue URL contains a marker captured by `issue_link_patterns`
 - today that marker is `?sfoglia=1`, because the issue page must open in the
   readable subscriber view instead of the bare storefront product page
+- the same issue URL may appear more than once in one product card, so the
+  parser prefers the richest descriptive label over generic CTAs such as
+  `Sfoglia`
+- when the product-card text also includes storefront pricing and synopsis
+  copy, the parser keeps a cleaner issue title plus a separate summary string
 
 If the site changes:
 
 - first try adjusting `issue_link_patterns` in config
 - if the issue index stops exposing ordinary anchors, update
-  `discover_issues()` or add a dedicated issue extractor
+  `discover_issues()` or adjust `_extract_issue_links()`
 
 ## Issue Page Parsing
 
@@ -150,8 +163,8 @@ If the feed changes shape, adjust:
 
 ## Generic Link Extraction
 
-`extract.extract_links()` is the generic anchor collector used by issue
-discovery and feed discovery.
+`extract.extract_links()` is the generic anchor collector used by feed
+discovery and by issue pages that fall back to whole-page article extraction.
 
 Important behavior:
 

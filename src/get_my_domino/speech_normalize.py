@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -12,9 +13,12 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 
+from .storage import read_article_metadata, update_article_metadata
+
 SPEECH_PROMPT_VERSION = "2026-04-28.1"
 SUPPORTED_SPEECH_AGENTS = ("codex", "codex-cloud", "github-cli", "github-copilot", "jelly")
 CODEX_NORMALIZER_MAX_ATTEMPTS = 3
+PACKAGED_PROMPT_PATH = "package:get_my_domino/prompts/speech-normalize-codex.txt"
 
 
 class SpeechNormalizeError(RuntimeError):
@@ -39,6 +43,14 @@ class SpeechNormalizeResult:
     path: Path
     changed: bool
     diff_text: str
+
+
+@dataclass(frozen=True)
+class PromptTemplateInfo:
+    path: str
+    version: str
+    sha256: str
+    template_text: str
 
 
 def speech_text_path(source_text_path: Path) -> Path:
@@ -66,13 +78,29 @@ def normalize_speech_text(
         raise SpeechNormalizeError(f"Text file not found: {source_text_path}")
 
     output_path = speech_text_path(source_text_path)
-    if _can_reuse(source_text_path, output_path, force=settings.force):
+    normalized_text = _mechanical_prepass(source_text_path.read_text(encoding="utf-8"))
+    prompt_info = _prompt_template_info(settings.prompt_path)
+    source_text_sha256 = _sha256_text(normalized_text)
+    if _can_reuse(
+        source_text_path,
+        output_path,
+        force=settings.force,
+        settings=settings,
+        prompt_info=prompt_info,
+        source_text_sha256=source_text_sha256,
+    ):
         return SpeechNormalizeResult(path=output_path, changed=False, diff_text="")
 
     try:
-        normalized_text = _mechanical_prepass(source_text_path.read_text(encoding="utf-8"))
         if settings.agent == "codex":
-            _run_codex_normalizer(source_text_path, output_path, normalized_text, settings)
+            _run_codex_normalizer(
+                source_text_path,
+                output_path,
+                normalized_text,
+                settings,
+                prompt_info=prompt_info,
+                source_text_sha256=source_text_sha256,
+            )
         elif settings.agent in SUPPORTED_SPEECH_AGENTS:
             raise SpeechNormalizeError(
                 f"Speech normalizer agent '{settings.agent}' is not implemented yet."
@@ -92,14 +120,42 @@ def normalize_speech_text(
     if not output_path.exists():
         raise SpeechNormalizeError(f"Speech normalizer did not create: {output_path}")
     _finalize_output(output_path)
+    _write_speech_metadata(
+        source_text_path,
+        output_path,
+        settings=settings,
+        prompt_info=prompt_info,
+        source_text_sha256=source_text_sha256,
+    )
     diff_text = _speech_diff(source_text_path, output_path) if settings.diff else ""
     return SpeechNormalizeResult(path=output_path, changed=True, diff_text=diff_text)
 
 
-def _can_reuse(source_text_path: Path, output_path: Path, *, force: bool) -> bool:
+def _can_reuse(
+    source_text_path: Path,
+    output_path: Path,
+    *,
+    force: bool,
+    settings: SpeechNormalizeSettings,
+    prompt_info: PromptTemplateInfo,
+    source_text_sha256: str,
+) -> bool:
     if force or not output_path.exists():
         return False
-    return output_path.stat().st_mtime >= source_text_path.stat().st_mtime
+    if output_path.stat().st_mtime < source_text_path.stat().st_mtime:
+        return False
+    metadata = _speech_metadata(source_text_path)
+    if metadata is None:
+        return False
+    return (
+        metadata.get("normalizer_agent") == settings.agent
+        and metadata.get("normalizer_command") == settings.command
+        and metadata.get("normalizer_model") == settings.model
+        and metadata.get("prompt_path") == prompt_info.path
+        and metadata.get("prompt_version") == prompt_info.version
+        and metadata.get("prompt_sha256") == prompt_info.sha256
+        and metadata.get("source_text_sha256") == source_text_sha256
+    )
 
 
 def _run_codex_normalizer(
@@ -107,6 +163,9 @@ def _run_codex_normalizer(
     output_path: Path,
     normalized_text: str,
     settings: SpeechNormalizeSettings,
+    *,
+    prompt_info: PromptTemplateInfo,
+    source_text_sha256: str,
 ) -> None:
     max_attempts = 1 if settings.fallback else CODEX_NORMALIZER_MAX_ATTEMPTS
     command_path = shutil.which(settings.command) or settings.command
@@ -115,7 +174,7 @@ def _run_codex_normalizer(
         source_text_path=source_text_path,
         output_path=output_path,
         normalized_text=normalized_text,
-        prompt_path=settings.prompt_path,
+        prompt_info=prompt_info,
     )
     command = [
         command_path,
@@ -150,8 +209,9 @@ def _run_codex_normalizer(
             attempts.append(
                 _codex_attempt_log(
                     command=command,
-                    source_text_hash=_sha256_text(normalized_text),
+                    source_text_hash=source_text_sha256,
                     settings=settings,
+                    prompt_info=prompt_info,
                     attempt=attempt,
                     max_attempts=max_attempts,
                     status=f"timeout after {settings.timeout:g} seconds",
@@ -167,8 +227,9 @@ def _run_codex_normalizer(
         attempts.append(
             _codex_attempt_log(
                 command=command,
-                source_text_hash=_sha256_text(normalized_text),
+                source_text_hash=source_text_sha256,
                 settings=settings,
+                prompt_info=prompt_info,
                 attempt=attempt,
                 max_attempts=max_attempts,
                 status="completed",
@@ -194,6 +255,7 @@ def _codex_attempt_log(
     command: list[str],
     source_text_hash: str,
     settings: SpeechNormalizeSettings,
+    prompt_info: PromptTemplateInfo,
     attempt: int,
     max_attempts: int,
     status: str,
@@ -210,7 +272,9 @@ def _codex_attempt_log(
             f"attempt: {attempt}/{max_attempts}",
             f"status: {status}",
             f"command: {' '.join(command)}",
-            f"prompt_path: {settings.prompt_path or 'packaged default'}",
+            f"prompt_path: {prompt_info.path}",
+            f"prompt_version: {prompt_info.version}",
+            f"prompt_sha256: {prompt_info.sha256}",
             f"source_sha256: {source_text_hash}",
             f"returncode: {returncode if returncode is not None else 'timeout'}",
             "",
@@ -236,10 +300,9 @@ def _codex_prompt(
     source_text_path: Path,
     output_path: Path,
     normalized_text: str,
-    prompt_path: Path | None,
+    prompt_info: PromptTemplateInfo,
 ) -> str:
-    template = _read_prompt_template(prompt_path)
-    return template.format(
+    return prompt_info.template_text.format(
         source_text_path=source_text_path,
         output_path=output_path,
         normalized_text=normalized_text,
@@ -253,6 +316,21 @@ def _read_prompt_template(prompt_path: Path | None) -> str:
         files("get_my_domino.prompts")
         .joinpath("speech-normalize-codex.txt")
         .read_text(encoding="utf-8")
+    )
+
+
+def _prompt_template_info(prompt_path: Path | None) -> PromptTemplateInfo:
+    template_text = _read_prompt_template(prompt_path)
+    resolved_prompt_path = (
+        str(prompt_path)
+        if prompt_path is not None and prompt_path.exists()
+        else PACKAGED_PROMPT_PATH
+    )
+    return PromptTemplateInfo(
+        path=resolved_prompt_path,
+        version=SPEECH_PROMPT_VERSION,
+        sha256=_sha256_text(template_text),
+        template_text=template_text,
     )
 
 
@@ -285,3 +363,43 @@ def _speech_diff(source_text_path: Path, output_path: Path) -> str:
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _speech_metadata(source_text_path: Path) -> dict[str, object] | None:
+    try:
+        metadata = read_article_metadata(source_text_path.parent)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    speech_metadata = metadata.get("speech_normalization")
+    if not isinstance(speech_metadata, dict):
+        return None
+    return {str(key): value for key, value in speech_metadata.items()}
+
+
+def _write_speech_metadata(
+    source_text_path: Path,
+    output_path: Path,
+    *,
+    settings: SpeechNormalizeSettings,
+    prompt_info: PromptTemplateInfo,
+    source_text_sha256: str,
+) -> None:
+    metadata_path = source_text_path.parent / "metadata.json"
+    if not metadata_path.exists():
+        return
+    update_article_metadata(
+        source_text_path.parent,
+        {
+            "speech_normalization": {
+                "normalizer_agent": settings.agent,
+                "normalizer_command": settings.command,
+                "normalizer_model": settings.model,
+                "prompt_path": prompt_info.path,
+                "prompt_sha256": prompt_info.sha256,
+                "prompt_version": prompt_info.version,
+                "source_text_sha256": source_text_sha256,
+                "normalized_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "normalized_output_path": str(output_path),
+            }
+        },
+    )

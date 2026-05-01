@@ -9,6 +9,7 @@ import sys
 import time
 from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import Future
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -724,6 +725,35 @@ def test_catalog_lists_issues_with_indexes(tmp_path: Path, capsys: CaptureFixtur
     assert "Fascia di prezzo" not in captured.out
     assert "29,00" not in captured.out
     assert "    https://www.rivistadomino.it/prodotto/primo?sfoglia=1" in captured.out
+
+
+def test_discover_issues_prefers_descriptive_listing_title_and_summary(tmp_path: Path) -> None:
+    issue_url = "https://www.rivistadomino.it/prodotto/primo/?sfoglia=1"
+    session = FakeSession(
+        {
+            "https://www.rivistadomino.it/mio-account/my_domino/": f"""
+            <div class="product">
+              <a class="button" href="{issue_url}">Sfoglia</a>
+              <a class="product-link" href="{issue_url}">
+                5/2024 Primo numero
+                7,50 € - 10,00 € Fascia di prezzo: da 7,50 € a 10,00 €
+                Una breve sinossi del primo numero.
+              </a>
+            </div>
+            """,
+        }
+    )
+    config = AppConfig(auth_session_path=tmp_path / "missing-session.json")
+
+    links = WebClient(config, session=session).discover_issues()
+
+    assert [(link.title, link.summary, link.url) for link in links] == [
+        (
+            "5/2024 Primo numero",
+            "Una breve sinossi del primo numero.",
+            "https://www.rivistadomino.it/prodotto/primo?sfoglia=1",
+        )
+    ]
 
 
 def test_catalog_expands_selected_issue_grouped_by_section(
@@ -3815,6 +3845,130 @@ def test_codex_speech_normalizer_uses_custom_prompt_file(
     )
 
     assert prompts == [f"Write {source} to {output} using Titolo\n"]
+
+
+def test_codex_speech_normalizer_records_metadata_json(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text(
+        "Write {source_text_path} to {output_path} using {normalized_text}",
+        encoding="utf-8",
+    )
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_text(
+        json.dumps({"title": "Titolo", "url": "https://example.test/article"}),
+        encoding="utf-8",
+    )
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, input, text, capture_output, timeout, check
+        output.write_text("Titolo", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            prompt_path=prompt_path,
+            diff=False,
+        ),
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    speech_metadata = metadata["speech_normalization"]
+    assert speech_metadata["prompt_path"] == str(prompt_path)
+    assert speech_metadata["prompt_version"] == speech_normalize.SPEECH_PROMPT_VERSION
+    assert speech_metadata["normalizer_command"] == "codex"
+    assert speech_metadata["source_text_sha256"] == speech_normalize._sha256_text("Titolo\n")
+    assert speech_metadata["prompt_sha256"] == speech_normalize._sha256_text(
+        prompt_path.read_text(encoding="utf-8")
+    )
+    assert speech_metadata["normalized_output_path"] == str(output)
+    datetime.fromisoformat(speech_metadata["normalized_at"])
+
+
+def test_codex_speech_normalizer_reruns_when_prompt_file_changes(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text(
+        "Write {source_text_path} to {output_path} using {normalized_text}",
+        encoding="utf-8",
+    )
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_text(
+        json.dumps({"title": "Titolo", "url": "https://example.test/article"}),
+        encoding="utf-8",
+    )
+    rendered_outputs = iter(("Titolo prima", "Titolo seconda"))
+    calls = 0
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, input, text, capture_output, timeout, check
+        nonlocal calls
+        calls += 1
+        output.write_text(next(rendered_outputs), encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+    settings = speech_normalize.SpeechNormalizeSettings(
+        enabled=True,
+        agent="codex",
+        command="codex",
+        model="",
+        timeout=123.0,
+        force=False,
+        fallback=False,
+        prompt_path=prompt_path,
+        diff=False,
+    )
+
+    first_output = speech_normalize.ensure_speech_text(source, settings)
+    first_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))["speech_normalization"]
+
+    prompt_path.write_text(
+        "Rewrite {source_text_path} to {output_path} with {normalized_text}",
+        encoding="utf-8",
+    )
+    second_output = speech_normalize.ensure_speech_text(source, settings)
+    second_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))["speech_normalization"]
+
+    assert first_output == output
+    assert second_output == output
+    assert output.read_text(encoding="utf-8") == "Titolo seconda\n"
+    assert calls == 2
+    assert first_metadata["prompt_sha256"] != second_metadata["prompt_sha256"]
 
 
 def test_codex_speech_normalizer_retries_timeout_then_succeeds(

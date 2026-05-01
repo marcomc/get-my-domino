@@ -57,7 +57,8 @@ and publishing company for the digital offering.
 - `La settimana di Domino` export grouped in one dated article collection
 - Clean article export to same-name `.html` and `.txt` files, optional `.rtf`,
   and lightweight `metadata.json`; readable text omits source URLs so audio
-  does not read them aloud
+  does not read them aloud, and speech-normalized runs record prompt and
+  source metadata for reuse/invalidation
 - Incremental `sync-magazine` and `sync-feed` commands with local manifests
 - Optional `.m4a` or `.mp3` synthesis through macOS `say` and `afconvert`
 - Optional full-issue `.m4b` audiobook packaging with chapter markers, embedded
@@ -197,8 +198,16 @@ Domino currently exposes WordPress session cookies, not a separate refresh
 token like the Degoo flow used by `cligoo`. The CLI therefore persists cookies
 and revalidates them against `mio-account`.
 
+As of May 1, 2026, Domino’s public FAQ still describes the app/reader flow as
+reusing the same site credentials and then remembering them locally, which
+matches the cookie/session approach above rather than a renewable API token
+flow.
+
 Issue discovery starts from the subscriber `my_domino` page and keeps
 `?sfoglia=1` links so article discovery can reach the private issue contents.
+The issue index parser also prefers descriptive product-card titles over
+generic CTA labels like `Sfoglia`, while keeping the listing synopsis for
+catalog output.
 
 Most users should never need to touch the advanced site-override keys such as:
 
@@ -600,6 +609,13 @@ The original `.txt` remains unchanged. The prompt also allows conservative
 Italian punctuation fixes for TTS prosody, for example closing clear incisi or
 adding a comma at a real clause boundary, but forbids punctuation changes that
 would alter syntax or meaning.
+
+After a successful normalization run, the article `metadata.json` gains a
+`speech_normalization` block with the prompt path, prompt version, prompt hash,
+normalizer command, model, source-text hash, output path, and normalization
+timestamp. Existing `.speech.txt` files are reused only when that metadata
+still matches the current source text and prompt template, so changing the
+configured prompt file invalidates stale speech sidecars automatically.
 
 The default prompt is installed as a user-editable file at
 `~/.config/get-my-domino/speech-normalize-codex.txt`. Set

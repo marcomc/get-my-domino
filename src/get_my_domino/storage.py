@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import filecmp
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +25,10 @@ def article_basename(target_dir: Path) -> str:
 def article_text_path(target_dir: Path) -> Path:
     normalize_article_artifacts(target_dir)
     return target_dir / f"{article_basename(target_dir)}.txt"
+
+
+def article_metadata_path(target_dir: Path) -> Path:
+    return target_dir / "metadata.json"
 
 
 def write_article(
@@ -71,14 +76,9 @@ def write_article_export(
     if "rtf" in export_formats:
         (target_dir / f"{basename}.rtf").write_text(_rtf_document(article_text), encoding="ascii")
     _remove_unselected_export_files(target_dir, export_formats)
-    (target_dir / "metadata.json").write_text(
-        json.dumps(
-            article_metadata(article, metadata=metadata),
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    write_json_object(
+        article_metadata_path(target_dir),
+        article_metadata(article, metadata=metadata),
     )
 
 
@@ -90,14 +90,9 @@ def write_article_metadata(
 ) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     normalize_article_artifacts(target_dir)
-    (target_dir / "metadata.json").write_text(
-        json.dumps(
-            article_metadata(article, metadata=metadata),
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    write_json_object(
+        article_metadata_path(target_dir),
+        article_metadata(article, metadata=metadata),
     )
 
 
@@ -150,6 +145,35 @@ def missing_article_export_files(target_dir: Path, *, export_formats: tuple[str,
     expected = [f"{basename}.{extension}" for extension in export_formats]
     expected.append("metadata.json")
     return [name for name in expected if not (target_dir / name).exists()]
+
+
+def read_json_object(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON object expected in {path}")
+    return {str(key): value for key, value in data.items()}
+
+
+def write_json_object(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def read_article_metadata(target_dir: Path) -> dict[str, object]:
+    return read_json_object(article_metadata_path(target_dir))
+
+
+def update_article_metadata(target_dir: Path, updates: dict[str, object]) -> Path:
+    metadata_path = article_metadata_path(target_dir)
+    payload = read_json_object(metadata_path)
+    payload.update({key: value for key, value in updates.items() if value is not None})
+    write_json_object(metadata_path, payload)
+    return metadata_path
 
 
 def normalize_article_artifacts(target_dir: Path) -> None:
@@ -258,10 +282,7 @@ def read_manifest(output_dir: Path) -> dict[str, str]:
 
 def write_manifest(output_dir: Path, manifest: dict[str, str]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path(output_dir).write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    write_json_object(manifest_path(output_dir), manifest)
 
 
 def issue_metadata_path(issue_dir: Path) -> Path:
@@ -271,12 +292,6 @@ def issue_metadata_path(issue_dir: Path) -> Path:
 def write_issue_metadata(issue_dir: Path, payload: dict[str, object]) -> Path:
     issue_dir.mkdir(parents=True, exist_ok=True)
     path = issue_metadata_path(issue_dir)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    (issue_dir / "metadata.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    write_json_object(path, payload)
+    write_json_object(issue_dir / "metadata.json", payload)
     return path

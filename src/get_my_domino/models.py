@@ -13,6 +13,7 @@ class Link:
     author: str | None = None
     published_date: str | None = None
     order: int | None = None
+    summary: str | None = None
 
 
 @dataclass(frozen=True)
