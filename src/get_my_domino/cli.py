@@ -12,6 +12,7 @@ import sys
 import textwrap
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
@@ -1597,17 +1598,97 @@ def _existing_article_dir(
     output_dir: Path,
 ) -> Path | None:
     if article_url in manifest:
-        return _remap_legacy_manifest_dir(
+        path = _remap_legacy_manifest_dir(
             Path(manifest[article_url]).expanduser(),
             output_dir=output_dir,
         )
+        return path if path.exists() else None
     normalized_url = article_url.rstrip("/")
     if normalized_url in manifest:
-        return _remap_legacy_manifest_dir(
+        path = _remap_legacy_manifest_dir(
             Path(manifest[normalized_url]).expanduser(),
             output_dir=output_dir,
         )
+        return path if path.exists() else None
     return None
+
+
+def _issue_sidecar_article_dirs(issue_dir: Path) -> list[Path]:
+    metadata_path = issue_dir / "issue.json"
+    if not metadata_path.exists():
+        return []
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    articles = payload.get("articles")
+    if not isinstance(articles, list):
+        return []
+    resolved: list[Path] = []
+    for entry in articles:
+        if not isinstance(entry, dict):
+            continue
+        raw_dir = entry.get("article_dir")
+        if not isinstance(raw_dir, str) or not raw_dir.strip():
+            continue
+        path = Path(raw_dir).expanduser()
+        if not path.is_absolute():
+            path = issue_dir / path
+        if path.exists():
+            resolved.append(path)
+            continue
+        if len(path.parts) >= 2:
+            remapped = issue_dir / path.parts[-2] / path.parts[-1]
+            if remapped.exists():
+                resolved.append(remapped)
+    return resolved
+
+
+def _canonicalize_issue_article_dir(stored_dir: Path, *, planned_dir: Path) -> Path:
+    if stored_dir == planned_dir:
+        return stored_dir
+    if stored_dir.exists() and not planned_dir.exists():
+        planned_dir.parent.mkdir(parents=True, exist_ok=True)
+        stored_dir.rename(planned_dir)
+        return planned_dir
+    return stored_dir
+
+
+def _reusable_issue_article_dirs(
+    issue: Issue,
+    *,
+    issue_dir: Path,
+    output_dir: Path,
+) -> list[Path | None]:
+    manifest = read_manifest(output_dir)
+    planned_dirs = _planned_issue_article_dirs(issue, issue_dir=issue_dir)
+    sidecar_dirs = _issue_sidecar_article_dirs(issue_dir)
+    url_counts = Counter(article.url.rstrip("/") for article in issue.articles)
+    reusable: list[Path | None] = []
+    for index, (article, planned_dir) in enumerate(zip(issue.articles, planned_dirs, strict=True)):
+        if planned_dir.exists():
+            reusable.append(planned_dir)
+            continue
+        if index < len(sidecar_dirs):
+            reusable.append(
+                _canonicalize_issue_article_dir(sidecar_dirs[index], planned_dir=planned_dir)
+            )
+            continue
+        if url_counts[article.url.rstrip("/")] > 1:
+            reusable.append(None)
+            continue
+        existing_dir = _existing_article_dir(
+            manifest,
+            article.url,
+            output_dir=output_dir,
+        )
+        if existing_dir is None:
+            reusable.append(None)
+            continue
+        reusable.append(_canonicalize_issue_article_dir(existing_dir, planned_dir=planned_dir))
+    return reusable
 
 
 def _resolved_issue_article_dirs(
@@ -1648,6 +1729,26 @@ def _planned_issue_article_dirs(issue: Issue, *, issue_dir: Path) -> list[Path]:
             )
         )
     return planned_dirs
+
+
+def _issue_has_duplicate_article_urls(issue: Issue) -> bool:
+    normalized_urls = [article.url.rstrip("/") for article in issue.articles]
+    return len(set(normalized_urls)) != len(normalized_urls)
+
+
+def _existing_audiobook_path_for_issue(
+    issue: Issue,
+    *,
+    root_output_dir: Path,
+    config: AppConfig,
+    filename_settings: AudiobookFilenameSettings,
+) -> Path | None:
+    output_path = _audiobook_output_path(
+        _audiobooks_dir(root_output_dir, config),
+        issue,
+        settings=filename_settings,
+    )
+    return output_path if output_path.exists() else None
 
 
 def _stored_issue_article_dirs(
@@ -2583,29 +2684,48 @@ def _handle_sync(
     issues = client.discover_issues()
     manifest = read_manifest(output_dir)
     downloaded_dirs: list[Path] = []
-    audio_dirs: list[Path] = []
-    issue_bundle_plans: list[IssueBundlePlan] = []
     selected_count = 0
+    audio_header_printed = False
+    audio_result = 0
 
     _print_sync_header(config.magazine_title, output_dir=output_dir)
     for issue in issues:
         issue_detail = client.discover_issue(issue.url)
         issue_dir = output_dir / _issue_folder_name(issue_detail.title, issue_detail.issue_code)
         issue_article_dirs: list[Path] = []
+        effective_filename_settings = (
+            audiobook_filename_settings or _configured_audiobook_filename_settings(config)
+        )
+        reusable_article_dirs = _reusable_issue_article_dirs(
+            issue_detail,
+            issue_dir=issue_dir,
+            output_dir=output_dir,
+        )
+        if (
+            not force
+            and _issue_has_duplicate_article_urls(issue_detail)
+            and not any(reusable_article_dirs)
+            and (
+                existing_audiobook := _existing_audiobook_path_for_issue(
+                    issue_detail,
+                    root_output_dir=root_output_dir,
+                    config=config,
+                    filename_settings=effective_filename_settings,
+                )
+            )
+            is not None
+        ):
+            print(f"↻ Reusing existing audiobook {existing_audiobook.name}")
+            continue
         print(f"issue: {issue_detail.title}")
         group_indexes = _group_indexes(issue_detail.articles)
-        for article_link in issue_detail.articles:
+        for index, article_link in enumerate(issue_detail.articles):
             if max_articles is not None and selected_count >= max_articles:
                 break
             article_started_at = time.monotonic()
-            existing_dir = _existing_article_dir(
-                manifest,
-                article_link.url,
-                output_dir=output_dir,
-            )
+            existing_dir = reusable_article_dirs[index]
             if existing_dir is not None and not force:
                 if create_audio:
-                    audio_dirs.append(existing_dir)
                     selected_count += 1
                     _print_download_result(
                         article_link.title,
@@ -2652,8 +2772,6 @@ def _handle_sync(
             downloaded_dirs.append(target_dir)
             issue_article_dirs.append(target_dir)
             selected_count += 1
-            if create_audio:
-                audio_dirs.append(target_dir)
             _print_download_result(
                 article.title,
                 export_status="written",
@@ -2672,14 +2790,35 @@ def _handle_sync(
                 article_dirs=issue_article_dirs,
                 cover_image_path=cover_image_path,
             )
-            if create_audiobook and len(issue_article_dirs) == len(issue_detail.articles):
-                issue_bundle_plans.append(
-                    IssueBundlePlan(
-                        issue=issue_detail,
-                        issue_dir=issue_dir,
-                        article_dirs=issue_article_dirs,
-                    )
+            if create_audio and issue_article_dirs:
+                issue_audio_result = _speak_paths(
+                    issue_article_dirs,
+                    output_dir=output_dir,
+                    voice=config.siri_voice,
+                    audio_format=audio_format,
+                    timeout=audio_timeout,
+                    chunked=audio_chunked,
+                    chunk_chars=audio_chunk_chars,
+                    concurrency=audio_concurrency,
+                    retries=audio_retries,
+                    stall_timeout=audio_stall_timeout,
+                    speech_options=speech_options,
+                    force=force,
+                    print_header=not audio_header_printed,
                 )
+                audio_header_printed = True
+                audio_result = max(audio_result, issue_audio_result)
+            _maybe_package_issue_audiobook(
+                issue=issue_detail,
+                issue_dir=issue_dir,
+                article_dirs=issue_article_dirs,
+                root_output_dir=root_output_dir,
+                config=config,
+                create_audiobook=create_audiobook,
+                audio_result=audio_result,
+                cover_image_path=cover_image_path,
+                filename_settings=effective_filename_settings,
+            )
             break
         cover_image_path = _ensure_issue_cover(
             client, issue_detail, issue_dir=issue_dir, force=force
@@ -2690,52 +2829,37 @@ def _handle_sync(
             article_dirs=issue_article_dirs,
             cover_image_path=cover_image_path,
         )
-        if (
-            create_audiobook
-            and issue_detail.articles
-            and len(issue_article_dirs) == len(issue_detail.articles)
-        ):
-            issue_bundle_plans.append(
-                IssueBundlePlan(
-                    issue=issue_detail,
-                    issue_dir=issue_dir,
-                    article_dirs=issue_article_dirs,
-                )
+        if create_audio and issue_article_dirs:
+            issue_audio_result = _speak_paths(
+                issue_article_dirs,
+                output_dir=output_dir,
+                voice=config.siri_voice,
+                audio_format=audio_format,
+                timeout=audio_timeout,
+                chunked=audio_chunked,
+                chunk_chars=audio_chunk_chars,
+                concurrency=audio_concurrency,
+                retries=audio_retries,
+                stall_timeout=audio_stall_timeout,
+                speech_options=speech_options,
+                force=force,
+                print_header=not audio_header_printed,
             )
+            audio_header_printed = True
+            audio_result = max(audio_result, issue_audio_result)
+        _maybe_package_issue_audiobook(
+            issue=issue_detail,
+            issue_dir=issue_dir,
+            article_dirs=issue_article_dirs,
+            root_output_dir=root_output_dir,
+            config=config,
+            create_audiobook=create_audiobook,
+            audio_result=audio_result,
+            cover_image_path=cover_image_path,
+            filename_settings=effective_filename_settings,
+        )
 
     write_manifest(output_dir, manifest)
-    audio_result = 0
-    if create_audio:
-        audio_result = _speak_paths(
-            audio_dirs,
-            output_dir=output_dir,
-            voice=config.siri_voice,
-            audio_format=audio_format,
-            timeout=audio_timeout,
-            chunked=audio_chunked,
-            chunk_chars=audio_chunk_chars,
-            concurrency=audio_concurrency,
-            retries=audio_retries,
-            stall_timeout=audio_stall_timeout,
-            speech_options=speech_options,
-            force=force,
-        )
-    if create_audiobook and audio_result == 0:
-        for plan in issue_bundle_plans:
-            cover_image_path = _issue_cover_path(plan.issue_dir, plan.issue)
-            with _progress_step(f"Packaging audiobook {plan.issue_dir.name}.m4b"):
-                _build_issue_audiobook(
-                    plan,
-                    root_output_dir=root_output_dir,
-                    config=config,
-                    filename_settings=(
-                        audiobook_filename_settings
-                        or _configured_audiobook_filename_settings(config)
-                    ),
-                    cover_image_path=cover_image_path
-                    if cover_image_path and cover_image_path.exists()
-                    else None,
-                )
     print(f"new_articles: {len(downloaded_dirs)}")
     return audio_result
 
@@ -2756,6 +2880,115 @@ def _group_indexes(links: list[Link]) -> dict[str, int]:
         if group_name not in indexes:
             indexes[group_name] = len(indexes) + 1
     return indexes
+
+
+def _maybe_package_issue_audiobook(
+    *,
+    issue: Issue,
+    issue_dir: Path,
+    article_dirs: list[Path],
+    root_output_dir: Path,
+    config: AppConfig,
+    create_audiobook: bool,
+    audio_result: int,
+    cover_image_path: Path | None,
+    filename_settings: AudiobookFilenameSettings,
+) -> None:
+    plan = IssueBundlePlan(
+        issue=issue,
+        issue_dir=issue_dir,
+        article_dirs=article_dirs,
+    )
+    if (
+        not create_audiobook
+        or not issue.articles
+        or len(article_dirs) != len(issue.articles)
+        or audio_result != 0
+        or not _issue_audiobook_ready(plan, root_output_dir=root_output_dir)
+    ):
+        return
+    existing_audiobook = _issue_audiobook_existing_output_path(
+        plan,
+        root_output_dir=root_output_dir,
+        config=config,
+        filename_settings=filename_settings,
+    )
+    effective_cover_image_path = (
+        cover_image_path if cover_image_path and cover_image_path.exists() else None
+    )
+    if existing_audiobook is not None and _issue_audiobook_up_to_date(
+        plan,
+        audiobook_path=existing_audiobook,
+        root_output_dir=root_output_dir,
+        cover_image_path=effective_cover_image_path,
+    ):
+        print(f"↻ Reusing existing audiobook {existing_audiobook.name}")
+        return
+    with _progress_step(f"Packaging audiobook {plan.issue_dir.name}.m4b"):
+        _build_issue_audiobook(
+            plan,
+            root_output_dir=root_output_dir,
+            config=config,
+            filename_settings=filename_settings,
+            cover_image_path=effective_cover_image_path,
+        )
+
+
+def _issue_audiobook_ready(plan: IssueBundlePlan, *, root_output_dir: Path) -> bool:
+    try:
+        for article, article_dir in zip(plan.issue.articles, plan.article_dirs, strict=True):
+            audio_path = _resolve_issue_audio_path(
+                article,
+                article_dir,
+                root_output_dir=root_output_dir,
+                audio_format="m4a",
+            )
+            if not audio_path.exists():
+                return False
+    except (AudioError, ValueError):
+        return False
+    return True
+
+
+def _issue_audiobook_existing_output_path(
+    plan: IssueBundlePlan,
+    *,
+    root_output_dir: Path,
+    config: AppConfig,
+    filename_settings: AudiobookFilenameSettings,
+) -> Path | None:
+    output_path = _audiobook_output_path(
+        _audiobooks_dir(root_output_dir, config),
+        plan.issue,
+        settings=filename_settings,
+    )
+    if output_path.exists():
+        return output_path
+    return None
+
+
+def _issue_audiobook_up_to_date(
+    plan: IssueBundlePlan,
+    *,
+    audiobook_path: Path,
+    root_output_dir: Path,
+    cover_image_path: Path | None,
+) -> bool:
+    if not audiobook_path.exists():
+        return False
+    audiobook_mtime = audiobook_path.stat().st_mtime
+    for article, article_dir in zip(plan.issue.articles, plan.article_dirs, strict=True):
+        audio_path = _resolve_issue_audio_path(
+            article,
+            article_dir,
+            root_output_dir=root_output_dir,
+            audio_format="m4a",
+        )
+        if not audio_path.exists() or audio_path.stat().st_mtime > audiobook_mtime:
+            return False
+    if cover_image_path is not None and cover_image_path.stat().st_mtime > audiobook_mtime:
+        return False
+    return True
 
 
 def _article_folder_name(link: Link, *, fallback_index: int) -> str:
@@ -2971,10 +3204,12 @@ def _speak_paths(
     stall_timeout: float = 45.0,
     speech_options: SpeechNormalizeOptions | None = None,
     force: bool = False,
+    print_header: bool = True,
 ) -> int:
     normalized_format = normalize_audio_format(audio_format)
     failures: list[AudioFailure] = []
-    print(_style_download_header())
+    if print_header:
+        print(_style_download_header())
     for raw_path in paths:
         started_at = time.monotonic()
         text_path = article_text_path(raw_path) if raw_path.is_dir() else raw_path
@@ -3068,11 +3303,23 @@ def _ensure_audio(
         return "reused", output_path
     speech_source_path = text_path
     if speech_options is not None and speech_options.enabled:
-        with _progress_step(f"Preparing speech text {text_path.name}"):
-            speech_source_path = ensure_speech_text(
-                text_path,
-                options=speech_options,
+        best_effort_speech_options = replace(
+            speech_options,
+            fallback=True,
+            timeout=min(speech_options.timeout, 120.0),
+        )
+        try:
+            with _progress_step(f"Preparing speech text {text_path.name}"):
+                speech_source_path = ensure_speech_text(
+                    text_path,
+                    options=best_effort_speech_options,
+                )
+        except SpeechNormalizeError as exc:
+            print(
+                f"↻ Speech normalization failed for {text_path.name}; using original text ({exc})",
+                file=sys.stderr,
             )
+            speech_source_path = text_path
     with _audio_progress_step(f"Generating audio {output_path.name}") as progress:
         synthesize_audio(
             speech_source_path,

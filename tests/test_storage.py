@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from get_my_domino.models import Article
-from get_my_domino.storage import write_article_metadata
+from get_my_domino.storage import article_text_path, write_article_metadata
 
 
 def test_write_article_metadata_normalizes_legacy_article_artifacts(tmp_path: Path) -> None:
@@ -38,3 +38,23 @@ def test_write_article_metadata_normalizes_legacy_article_artifacts(tmp_path: Pa
     assert not (target_dir / "01-2026-04-21-e-la-casa-bianca-rest-sola.html").exists()
     assert not (target_dir / "01-2026-04-21-e-la-casa-bianca-rest-sola.txt").exists()
     assert not (target_dir / "article.m4a").exists()
+
+
+def test_article_text_path_normalizes_legacy_text_basename(tmp_path: Path) -> None:
+    target_dir = tmp_path / "11-perche-la-cina-vince"
+    target_dir.mkdir()
+    legacy_text = target_dir / "11-perch-la-cina-vince.txt"
+    legacy_text.write_text("text", encoding="utf-8")
+    (target_dir / "11-perch-la-cina-vince.speech.txt").write_text("speech", encoding="utf-8")
+    (target_dir / "11-perch-la-cina-vince.speech.last-message.txt").write_text(
+        "last-message", encoding="utf-8"
+    )
+
+    resolved = article_text_path(target_dir)
+
+    assert resolved == target_dir / "11-perche-la-cina-vince.txt"
+    assert resolved.exists()
+    assert resolved.read_text(encoding="utf-8") == "text"
+    assert not legacy_text.exists()
+    assert (target_dir / "11-perch-la-cina-vince.speech.txt").exists()
+    assert (target_dir / "11-perch-la-cina-vince.speech.last-message.txt").exists()

@@ -22,6 +22,7 @@ def article_basename(target_dir: Path) -> str:
 
 
 def article_text_path(target_dir: Path) -> Path:
+    normalize_article_artifacts(target_dir)
     return target_dir / f"{article_basename(target_dir)}.txt"
 
 
@@ -187,6 +188,8 @@ def _legacy_artifact_paths(
     paths: list[Path] = []
     for candidate in sorted(target_dir.glob(f"*.{extension}")):
         if candidate == canonical_path:
+            continue
+        if candidate.name.count(".") != 1:
             continue
         paths.append(candidate)
     return paths

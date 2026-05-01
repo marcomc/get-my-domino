@@ -108,6 +108,7 @@ def _run_codex_normalizer(
     normalized_text: str,
     settings: SpeechNormalizeSettings,
 ) -> None:
+    max_attempts = 1 if settings.fallback else CODEX_NORMALIZER_MAX_ATTEMPTS
     command_path = shutil.which(settings.command) or settings.command
     log_path = speech_log_path(source_text_path)
     prompt = _codex_prompt(
@@ -133,7 +134,7 @@ def _run_codex_normalizer(
 
     attempts: list[str] = []
     last_error: SpeechNormalizeError | None = None
-    for attempt in range(1, CODEX_NORMALIZER_MAX_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
         if output_path.exists():
             output_path.unlink()
         try:
@@ -152,6 +153,7 @@ def _run_codex_normalizer(
                     source_text_hash=_sha256_text(normalized_text),
                     settings=settings,
                     attempt=attempt,
+                    max_attempts=max_attempts,
                     status=f"timeout after {settings.timeout:g} seconds",
                     returncode=None,
                     stdout=exc.stdout,
@@ -168,6 +170,7 @@ def _run_codex_normalizer(
                 source_text_hash=_sha256_text(normalized_text),
                 settings=settings,
                 attempt=attempt,
+                max_attempts=max_attempts,
                 status="completed",
                 returncode=result.returncode,
                 stdout=result.stdout,
@@ -192,6 +195,7 @@ def _codex_attempt_log(
     source_text_hash: str,
     settings: SpeechNormalizeSettings,
     attempt: int,
+    max_attempts: int,
     status: str,
     returncode: int | None,
     stdout: str | bytes | None,
@@ -203,7 +207,7 @@ def _codex_attempt_log(
         [
             f"timestamp: {datetime.now(UTC).isoformat(timespec='seconds')}",
             f"agent: {settings.agent}",
-            f"attempt: {attempt}/{CODEX_NORMALIZER_MAX_ATTEMPTS}",
+            f"attempt: {attempt}/{max_attempts}",
             f"status: {status}",
             f"command: {' '.join(command)}",
             f"prompt_path: {settings.prompt_path or 'packaged default'}",

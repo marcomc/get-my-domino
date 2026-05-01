@@ -6,6 +6,12 @@ from pathlib import Path
 from pytest import MonkeyPatch
 
 from get_my_domino.audiobook import AudiobookChapter, build_m4b
+from get_my_domino.audiobook_naming import (
+    AudiobookFilenameSettings,
+    render_audiobook_filename_for_issue,
+)
+from get_my_domino.extract import slugify
+from get_my_domino.models import Issue, Link
 
 
 def test_build_m4b_places_cover_input_before_cover_mapping(
@@ -133,3 +139,29 @@ def test_build_m4b_keeps_jpeg_cover_without_reencoding(
 
     ffmpeg_command = next(command for command in commands if "ffmpeg" in command[0])
     assert ffmpeg_command[ffmpeg_command.index("-c:v") + 1] == "copy"
+
+
+def test_render_audiobook_filename_for_issue_falls_back_to_publication_date() -> None:
+    issue = Issue(
+        title="L’anno della verità",
+        url="https://example.test/speciale",
+        issue_code=None,
+        articles=[
+            Link(
+                title="Editoriale",
+                url="https://example.test/blog/2025/01/15/editoriale",
+                published_date="2025-01-15",
+            )
+        ],
+    )
+
+    filename = render_audiobook_filename_for_issue(
+        issue,
+        settings=AudiobookFilenameSettings(),
+    )
+
+    assert filename == "domino-2025-01-15-l-anno-della-verita"
+
+
+def test_slugify_replaces_accented_letters_instead_of_dropping_them() -> None:
+    assert slugify("L’anno della verità") == "l-anno-della-verita"

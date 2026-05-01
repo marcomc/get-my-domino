@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -43,7 +44,7 @@ def normalize_url(url: str) -> str:
 
 
 def slugify(value: str, *, fallback: str = "item") -> str:
-    value = value.strip().lower()
+    value = _ascii_fold(value).strip().lower()
     value = re.sub(r"[^a-z0-9]+", "-", value)
     value = value.strip("-")
     return value or fallback
@@ -68,6 +69,11 @@ def issue_code_from_text(value: str) -> str | None:
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _ascii_fold(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in normalized if not unicodedata.combining(char))
 
 
 def _matches_any(value: str, patterns: Iterable[str]) -> bool:

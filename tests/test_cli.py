@@ -3,8 +3,10 @@ from __future__ import annotations
 import errno
 import fcntl
 import json
+import os
 import subprocess
 import sys
+import time
 from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import Future
 from pathlib import Path
@@ -1765,6 +1767,20 @@ def test_resolved_issue_article_dirs_prefers_manifest_paths_for_legacy_issue_tre
     assert resolved == [legacy_dir]
 
 
+def test_existing_article_dir_ignores_missing_manifest_path(tmp_path: Path) -> None:
+    output_dir = tmp_path / "exports"
+    missing_dir = output_dir / "missing-article"
+    write_manifest(output_dir, {"https://example.test/article": str(missing_dir)})
+
+    resolved = cli._existing_article_dir(
+        read_manifest(output_dir),
+        "https://example.test/article",
+        output_dir=output_dir,
+    )
+
+    assert resolved is None
+
+
 def test_download_issue_all_rejects_ambiguous_selectors(capsys: CaptureFixture[str]) -> None:
     result = cli.main(["download", "--issue", "2026-04", "--article", "1", "--all"])
 
@@ -2827,6 +2843,358 @@ def test_sync_magazine_skips_empty_issue_audiobook_plans(
     assert result == 0
 
 
+def test_sync_magazine_packages_completed_issues_during_resume(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    output_dir.mkdir(parents=True)
+    issue_one_link = Link(title="2026-04 Guaio persiano", url="https://example.test/issue-one")
+    issue_two_link = Link(title="2026-03 Assalto all'Iran", url="https://example.test/issue-two")
+    article_one = Link(
+        title="Gia completo",
+        url="https://example.test/article-one",
+        group="Sezione",
+        order=1,
+    )
+    article_two = Link(
+        title="Da completare",
+        url="https://example.test/article-two",
+        group="Sezione",
+        order=1,
+    )
+    issue_one = Issue(
+        title="Guaio persiano",
+        url=issue_one_link.url,
+        issue_code="2026-04",
+        articles=[article_one],
+    )
+    issue_two = Issue(
+        title="Assalto all'Iran",
+        url=issue_two_link.url,
+        issue_code="2026-03",
+        articles=[article_two],
+    )
+    issue_one_dir = output_dir / "2026-04-guaio-persiano" / "01-sezione" / "01-gia-completo"
+    issue_two_dir = output_dir / "2026-03-assalto-all-iran" / "01-sezione" / "01-da-completare"
+    issue_one_dir.mkdir(parents=True)
+    issue_two_dir.mkdir(parents=True)
+    (issue_one_dir / "01-gia-completo.txt").write_text("Testo", encoding="utf-8")
+    (issue_two_dir / "01-da-completare.txt").write_text("Testo", encoding="utf-8")
+    (issue_one_dir / "01-gia-completo.m4a").write_bytes(b"audio-one")
+    write_manifest(
+        output_dir,
+        {
+            article_one.url: str(issue_one_dir),
+            article_two.url: str(issue_two_dir),
+        },
+    )
+    events: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_one_link, issue_two_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            if url == issue_one_link.url:
+                return issue_one
+            if url == issue_two_link.url:
+                return issue_two
+            raise AssertionError(url)
+
+    def fake_speak_paths(paths: list[Path], **kwargs: object) -> int:
+        del kwargs
+        issue_code = "2026-04" if paths == [issue_one_dir] else "2026-03"
+        events.append(f"speak:{issue_code}")
+        if paths == [issue_two_dir]:
+            (issue_two_dir / "01-da-completare.m4a").write_bytes(b"audio-two")
+        return 0
+
+    def fake_build_issue_audiobook(
+        plan: cli.IssueBundlePlan,
+        *,
+        root_output_dir: Path,
+        config: AppConfig,
+        cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
+    ) -> Path:
+        del root_output_dir, config, cover_image_path, filename_settings
+        events.append(f"package:{plan.issue.issue_code}")
+        return tmp_path / f"{plan.issue.issue_code}.m4b"
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", fake_speak_paths)
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+    monkeypatch.setattr(cli, "_ensure_issue_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_write_issue_sidecar", lambda *args, **kwargs: tmp_path / "issue.json"
+    )
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", audiobook_auto=True),
+        create_audio=True,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    assert result == 0
+    assert events == [
+        "speak:2026-04",
+        "package:2026-04",
+        "speak:2026-03",
+        "package:2026-03",
+    ]
+
+
+def test_sync_magazine_packages_existing_issue_audio_without_generating_audio(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    output_dir.mkdir(parents=True)
+    issue_link = Link(title="2026-04 Guaio persiano", url="https://example.test/issue")
+    article_link = Link(
+        title="Gia completo",
+        url="https://example.test/article",
+        group="Sezione",
+        order=1,
+    )
+    issue = Issue(
+        title="Guaio persiano",
+        url=issue_link.url,
+        issue_code="2026-04",
+        articles=[article_link],
+    )
+    article_dir = output_dir / "2026-04-guaio-persiano" / "01-sezione" / "01-gia-completo"
+    article_dir.mkdir(parents=True)
+    (article_dir / "01-gia-completo.txt").write_text("Testo", encoding="utf-8")
+    (article_dir / "01-gia-completo.m4a").write_bytes(b"audio")
+    write_manifest(output_dir, {article_link.url: str(article_dir)})
+    packaged: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            assert url == issue_link.url
+            return issue
+
+    def fail_speak_paths(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        raise AssertionError("audio generation should not run")
+
+    def fake_build_issue_audiobook(
+        plan: cli.IssueBundlePlan,
+        *,
+        root_output_dir: Path,
+        config: AppConfig,
+        cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
+    ) -> Path:
+        del root_output_dir, config, cover_image_path, filename_settings
+        packaged.append(plan.issue.issue_code or "")
+        return tmp_path / "book.m4b"
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", fail_speak_paths)
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+    monkeypatch.setattr(cli, "_ensure_issue_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_write_issue_sidecar", lambda *args, **kwargs: tmp_path / "issue.json"
+    )
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", audiobook_auto=True),
+        create_audio=False,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    assert result == 0
+    assert packaged == ["2026-04"]
+
+
+def test_sync_magazine_reuses_existing_audiobook_for_duplicate_issue_urls(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "exports" / "library" / "rivista"
+    output_dir.mkdir(parents=True)
+    library_dir = tmp_path / "books"
+    library_dir.mkdir()
+    issue_link = Link(title="Speciale", url="https://example.test/issue")
+    shared_url = "https://example.test/speciale"
+    issue = Issue(
+        title="L'anno della verita",
+        url=issue_link.url,
+        issue_code=None,
+        articles=[
+            Link(title="Capitolo uno", url=shared_url, group="Sezione", order=1),
+            Link(title="Capitolo due", url=shared_url, group="Sezione", order=2),
+        ],
+    )
+    existing_book = library_dir / "Domino-l-anno-della-verita.m4b"
+    existing_book.write_bytes(b"book")
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def discover_issues(self) -> list[Link]:
+            return [issue_link]
+
+        def discover_issue(self, url: str) -> Issue:
+            assert url == issue_link.url
+            return issue
+
+    def fail_download_article(*args: object, **kwargs: object) -> Article:
+        del args, kwargs
+        raise AssertionError("special issue should reuse the existing audiobook")
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_audiobooks_dir", lambda *args, **kwargs: library_dir)
+    monkeypatch.setattr(cli, "_ensure_issue_cover", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_write_issue_sidecar", lambda *args, **kwargs: tmp_path / "issue.json"
+    )
+    monkeypatch.setattr(FakeWebClient, "download_article", fail_download_article, raising=False)
+
+    result = cli._handle_sync(
+        AppConfig(output_dir=tmp_path / "exports", audiobook_auto=True),
+        create_audio=True,
+        create_audiobook=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "Reusing existing audiobook domino-l-anno-della-verita.m4b" in captured.out
+
+
+def test_maybe_package_issue_audiobook_reuses_up_to_date_existing_file(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    article = Link(
+        title="Editoriale",
+        url="https://example.test/article",
+        order=1,
+    )
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        issue_code="2026-04",
+        articles=[article],
+    )
+    issue_dir = tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-editoriale"
+    article_dir.mkdir(parents=True)
+    audio_path = article_dir / "01-editoriale.m4a"
+    audio_path.write_text("audio", encoding="utf-8")
+    cover_path = issue_dir / "cover.jpg"
+    cover_path.write_text("cover", encoding="utf-8")
+    audiobook_dir = tmp_path / "books"
+    audiobook_dir.mkdir()
+    audiobook_path = audiobook_dir / "domino-2026-04-guaio-persiano.m4b"
+    audiobook_path.write_text("book", encoding="utf-8")
+
+    now = time.time()
+    os.utime(audio_path, (now - 20, now - 20))
+    os.utime(cover_path, (now - 10, now - 10))
+    os.utime(audiobook_path, (now, now))
+
+    def fake_build_issue_audiobook(*args: object, **kwargs: object) -> Path:
+        raise AssertionError("up-to-date audiobook should not be rebuilt")
+
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+
+    cli._maybe_package_issue_audiobook(
+        issue=issue,
+        issue_dir=issue_dir,
+        article_dirs=[article_dir],
+        root_output_dir=tmp_path / "exports",
+        config=AppConfig(output_dir=tmp_path / "exports", audiobook_output_dir=audiobook_dir),
+        create_audiobook=True,
+        audio_result=0,
+        cover_image_path=cover_path,
+        filename_settings=AudiobookFilenameSettings(),
+    )
+
+    captured = capsys.readouterr()
+    assert "Reusing existing audiobook domino-2026-04-guaio-persiano.m4b" in captured.out
+
+
+def test_maybe_package_issue_audiobook_rebuilds_when_audio_is_newer(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    article = Link(
+        title="Editoriale",
+        url="https://example.test/article",
+        order=1,
+    )
+    issue = Issue(
+        title="Guaio persiano",
+        url="https://example.test/issue",
+        issue_code="2026-04",
+        articles=[article],
+    )
+    issue_dir = tmp_path / "exports" / "library" / "rivista" / "2026-04-guaio-persiano"
+    article_dir = issue_dir / "01-editoriale"
+    article_dir.mkdir(parents=True)
+    audio_path = article_dir / "01-editoriale.m4a"
+    audio_path.write_text("audio", encoding="utf-8")
+    audiobook_dir = tmp_path / "books"
+    audiobook_dir.mkdir()
+    audiobook_path = audiobook_dir / "domino-2026-04-guaio-persiano.m4b"
+    audiobook_path.write_text("book", encoding="utf-8")
+
+    now = time.time()
+    os.utime(audiobook_path, (now - 20, now - 20))
+    os.utime(audio_path, (now, now))
+    built: list[Path] = []
+
+    def fake_build_issue_audiobook(
+        plan: cli.IssueBundlePlan,
+        *,
+        root_output_dir: Path,
+        config: AppConfig,
+        cover_image_path: Path | None,
+        filename_settings: AudiobookFilenameSettings,
+    ) -> Path:
+        del plan, root_output_dir, config, cover_image_path, filename_settings
+        built.append(audiobook_path)
+        return audiobook_path
+
+    monkeypatch.setattr(cli, "_build_issue_audiobook", fake_build_issue_audiobook)
+
+    cli._maybe_package_issue_audiobook(
+        issue=issue,
+        issue_dir=issue_dir,
+        article_dirs=[article_dir],
+        root_output_dir=tmp_path / "exports",
+        config=AppConfig(output_dir=tmp_path / "exports", audiobook_output_dir=audiobook_dir),
+        create_audiobook=True,
+        audio_result=0,
+        cover_image_path=None,
+        filename_settings=AudiobookFilenameSettings(),
+    )
+
+    assert built == [audiobook_path]
+
+
 def test_audio_timeout_must_be_positive() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["download", "https://example.test/a", "--audio-timeout", "0"])
@@ -3064,6 +3432,8 @@ def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
     ) -> Path:
         assert source == raw_text
         assert options.enabled is True
+        assert options.fallback is True
+        assert options.timeout == 120.0
         speech_text.write_text("Titolo\n\nCorpo normalizzato.", encoding="utf-8")
         return speech_text
 
@@ -3102,6 +3472,64 @@ def test_ensure_audio_uses_speech_text_when_normalization_is_enabled(
     assert status == "generated"
     assert calls == [speech_text]
     assert output == article_dir / "001-editoriale.m4a"
+
+
+def test_ensure_audio_falls_back_to_original_text_on_normalizer_failure(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    article_dir = tmp_path / "exports" / "001-editoriale"
+    article_dir.mkdir(parents=True)
+    raw_text = article_dir / "001-editoriale.txt"
+    raw_text.write_text("Titolo\n\nCorpo.", encoding="utf-8")
+    calls: list[Path] = []
+
+    def fake_ensure_speech_text(
+        source: Path,
+        *,
+        options: cli.SpeechNormalizeOptions,
+    ) -> Path:
+        del options
+        assert source == raw_text
+        raise speech_normalize.SpeechNormalizeError("codex normalizer failed with exit code 1")
+
+    def fake_synthesize_audio(
+        source: Path,
+        output: Path,
+        **kwargs: object,
+    ) -> Path:
+        del kwargs
+        calls.append(source)
+        output.write_text("audio", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(cli, "ensure_speech_text", fake_ensure_speech_text)
+    monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+
+    status, output = cli._ensure_audio(
+        article_dir,
+        output_dir=tmp_path / "exports",
+        voice=None,
+        audio_format="m4a",
+        timeout=900.0,
+        speech_options=cli.SpeechNormalizeOptions(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="",
+            timeout=900.0,
+            force=False,
+            fallback=False,
+            prompt_path=None,
+            diff=False,
+        ),
+    )
+
+    captured = capsys.readouterr()
+
+    assert status == "generated"
+    assert calls == [raw_text]
+    assert output == article_dir / "001-editoriale.m4a"
+    assert "using original text" in captured.err
 
 
 def test_codex_speech_normalizer_invokes_cli_without_printing_article(
@@ -3278,6 +3706,51 @@ def test_codex_speech_normalizer_retries_timeout_then_succeeds(
     assert "temporary stall" in log_text
     assert "attempt: 2/3" in log_text
     assert "status: completed" in log_text
+
+
+def test_codex_speech_normalizer_best_effort_fallback_skips_retries(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    calls = 0
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, input, text, capture_output, timeout, check
+        nonlocal calls
+        calls += 1
+        raise subprocess.TimeoutExpired(["codex", "exec"], 123.0, stderr="temporary stall")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    result = speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="",
+            timeout=123.0,
+            force=False,
+            fallback=True,
+            prompt_path=None,
+            diff=False,
+        ),
+    )
+
+    assert result == source
+    assert calls == 1
+    log_text = (tmp_path / "001-editoriale.speech.log").read_text(encoding="utf-8")
+    assert "attempt: 1/1" in log_text
+    assert "status: timeout after 123 seconds" in log_text
 
 
 def test_synthesize_mp3_uses_ffmpeg_after_say(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

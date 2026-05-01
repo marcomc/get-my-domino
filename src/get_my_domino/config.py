@@ -80,7 +80,7 @@ class AppConfig:
     audio_timeout: float = 900.0
     audio_chunked: bool = True
     audio_chunk_chars: int = 2500
-    audio_chunk_concurrency: int = 3
+    audio_chunk_concurrency: int = 4
     audio_chunk_retries: int = 2
     audio_stall_timeout: float = 45.0
     speech_normalize_auto: bool = False
@@ -240,7 +240,7 @@ def load_config(path: Path) -> AppConfig:
             key="audio_chunk_chars",
         ),
         audio_chunk_concurrency=normalize_positive_int(
-            data.get("audio_chunk_concurrency", 3),
+            data.get("audio_chunk_concurrency", 4),
             key="audio_chunk_concurrency",
         ),
         audio_chunk_retries=normalize_non_negative_int(

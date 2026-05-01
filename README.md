@@ -478,7 +478,7 @@ after each row. The article summary includes one total elapsed time.
 macOS `say` does not expose true synthesis percentage, so audio generation
 does not show a percentage or ETA. By default, long article text is split into
 small paragraph-aware chunks. The CLI synthesizes up to
-`audio_chunk_concurrency = 3` chunk AIFF files at a time, retries failed chunks
+`audio_chunk_concurrency = 4` chunk AIFF files at a time, retries failed chunks
 with `audio_chunk_retries`, joins the AIFF chunks into one temporary AIFF, and
 then performs one final `afconvert` or `ffmpeg` conversion. This avoids long
 single `say` runs that can silently truncate Siri/neural output.

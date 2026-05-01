@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 import string
+import unicodedata
 from dataclasses import dataclass
 
+from .extract import article_date_from_url
 from .models import Issue
 
 DEFAULT_AUDIOBOOK_MAGAZINE_TITLE = "Domino"
@@ -81,7 +83,9 @@ def render_audiobook_filename(
     }
     rendered = format_template.format_map(values)
     cleaned = _clean_filename_text(rendered)
+    cleaned = re.sub(re.escape(separator) + r"{2,}", separator, cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    cleaned = cleaned.strip(separator)
     if not cleaned:
         raise ValueError("Audiobook filename format rendered an empty filename.")
     return cleaned
@@ -121,7 +125,10 @@ def issue_year_number(issue: Issue) -> tuple[str, str]:
     issue_code = issue.issue_code
     if issue_code and re.fullmatch(r"\d{4}-\d{2}", issue_code):
         return tuple(issue_code.split("-", 1))  # type: ignore[return-value]
-    raise ValueError(f"Issue {issue.title!r} does not expose a valid issue code.")
+    date = _issue_date(issue)
+    if date is not None:
+        return _year_number_from_issue_date(date)
+    return "", ""
 
 
 def year_number_from_tags(*, date: str, issue_code: str | None = None) -> tuple[str, str]:
@@ -139,7 +146,30 @@ def _clean_filename_text(value: str) -> str:
 
 
 def _slug_text(value: str, *, separator: str) -> str:
-    cleaned = _clean_filename_text(value).lower()
-    cleaned = re.sub(r"[^0-9a-zà-öø-ÿ]+", separator, cleaned, flags=re.IGNORECASE)
+    cleaned = _ascii_fold(_clean_filename_text(value)).lower()
+    cleaned = re.sub(r"[^0-9a-z]+", separator, cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(re.escape(separator) + r"{2,}", separator, cleaned)
     return cleaned.strip(separator) or "item"
+
+
+def _issue_date(issue: Issue) -> str | None:
+    dates = [
+        date
+        for article in issue.articles
+        if (date := article.published_date or article_date_from_url(article.url)) is not None
+    ]
+    if not dates:
+        return None
+    return min(dates)
+
+
+def _year_number_from_issue_date(date: str) -> tuple[str, str]:
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", date)
+    if match:
+        return match.group(1), f"{match.group(2)}-{match.group(3)}"
+    return year_number_from_tags(date=date, issue_code=None)
+
+
+def _ascii_fold(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in normalized if not unicodedata.combining(char))
