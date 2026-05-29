@@ -454,12 +454,14 @@ def _prepare_podcast_collections(
 ) -> list[PodcastCollectionOutput]:
     collections: list[PodcastCollectionOutput] = []
     for source_collection_dir in _iter_collection_dirs(library_dir):
-        source_episodes = _collection_episodes(source_collection_dir, audio_format=audio_format)
-        if not source_episodes:
-            continue
         details = _collection_details(source_collection_dir)
         target_collection_dir = podcast_output_dir / (details.slug or source_collection_dir.name)
+        source_episodes = _collection_episodes(source_collection_dir, audio_format=audio_format)
+        if not source_episodes:
+            _remove_stale_collection_output(target_collection_dir)
+            continue
         target_collection_dir.mkdir(parents=True, exist_ok=True)
+        _remove_stale_audio_outputs(source_episodes, target_collection_dir)
         episodes = tuple(_copy_episode_audio(source_episodes, target_collection_dir))
         artwork_path = _ensure_collection_artwork(
             details,
@@ -476,6 +478,26 @@ def _prepare_podcast_collections(
             )
         )
     return collections
+
+
+def _remove_stale_collection_output(target_collection_dir: Path) -> None:
+    if not target_collection_dir.exists():
+        return
+    shutil.rmtree(target_collection_dir)
+
+
+def _remove_stale_audio_outputs(
+    source_episodes: list[PodcastEpisode],
+    target_collection_dir: Path,
+) -> None:
+    expected_names = {episode.audio_path.name for episode in source_episodes}
+    for path in target_collection_dir.iterdir():
+        if (
+            path.is_file()
+            and path.suffix.lower() in PODCAST_AUDIO_SUFFIXES
+            and path.name not in expected_names
+        ):
+            path.unlink()
 
 
 def _copy_episode_audio(
