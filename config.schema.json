@@ -126,6 +126,27 @@
       "exclusiveMinimum": 0,
       "default": 45
     },
+    "podcast_auto": {
+      "type": "boolean",
+      "default": false
+    },
+    "podcast_base_url": {
+      "type": "string",
+      "default": ""
+    },
+    "podcast_output_dir": {
+      "type": "string",
+      "default": ""
+    },
+    "podcast_audio_format": {
+      "type": "string",
+      "enum": ["", "m4a", "mp4a", "mp3"],
+      "default": ""
+    },
+    "podcast_apple_podcasts": {
+      "type": "boolean",
+      "default": true
+    },
     "speech_normalize_auto": {
       "type": "boolean",
       "default": false

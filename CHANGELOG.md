@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-05-29 - Add RSS feed support for la-settimana-di-domino
+
+### Podcast Outputs
+
+- Added `outputs` and `sync-feed --podcast` support to generate podcast
+  `feed.xml` files for recurring feed collections plus a static
+  `podcast_output_dir/index.html` landing page modeled on the RaiPlaySound
+  podcast output.
+- Added podcast configuration keys for public base URLs, optional automatic
+  generation after feed sync, dedicated podcast output directories, feed audio
+  format selection, and Apple Podcasts link generation.
+- Podcast outputs now copy episode audio into flat per-feed publish folders,
+  add a red-and-black Domino Apple touch icon, and use the official Domino
+  touch icon for `La settimana di Domino` artwork.
+- Podcast-enabled feed syncs now use `podcast_audio_format` for article audio
+  when it is configured and no `--audio-format` override is passed.
+- Podcast feeds expose per-article `.mp3` or `.m4a` audio as RSS enclosures
+  and intentionally leave issue-level `.m4b` audiobooks out of the RSS feed.
+
 ## [0.1.4] - 2026-05-01
 
 ### Metadata

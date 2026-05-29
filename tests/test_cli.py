@@ -19,7 +19,7 @@ from pytest import CaptureFixture, MonkeyPatch
 from requests import Response
 from requests.cookies import RequestsCookieJar
 
-from get_my_domino import __version__, cli, speech_normalize
+from get_my_domino import __version__, cli, podcast_outputs, speech_normalize
 from get_my_domino import audio as audio_module
 from get_my_domino.audiobook_naming import AudiobookFilenameSettings
 from get_my_domino.config import AppConfig, load_config
@@ -295,6 +295,11 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
                 "audio_chunk_concurrency = 4",
                 "audio_chunk_retries = 3",
                 "audio_stall_timeout = 67",
+                "podcast_auto = true",
+                'podcast_base_url = "https://podcasts.example.test/domino/"',
+                'podcast_output_dir = "~/Podcasts/Domino"',
+                'podcast_audio_format = "mp4a"',
+                "podcast_apple_podcasts = false",
                 "speech_normalize_auto = true",
                 'speech_normalize_agent = "codex"',
                 'speech_normalize_command = "codex"',
@@ -323,6 +328,12 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
     assert config.audio_chunk_concurrency == 4
     assert config.audio_chunk_retries == 3
     assert config.audio_stall_timeout == 67.0
+    assert config.podcast_auto is True
+    assert config.podcast_base_url == "https://podcasts.example.test/domino"
+    assert config.podcast_output_dir == Path.home() / "Podcasts" / "Domino"
+    assert config.podcasts_dir == Path.home() / "Podcasts" / "Domino"
+    assert config.podcast_audio_format == "m4a"
+    assert config.podcast_apple_podcasts is False
     assert config.speech_normalize_auto is True
     assert config.speech_normalize_agent == "codex"
     assert config.speech_normalize_command == "codex"
@@ -375,6 +386,7 @@ def test_config_derives_default_output_dir_from_collection_dir_name(tmp_path: Pa
     assert config.collection_dir_name == "rivista_domino"
     assert config.output_dir == tmp_path / "rivista_domino"
     assert config.audiobooks_dir == tmp_path / "rivista_domino" / "audiobooks"
+    assert config.podcasts_dir == tmp_path / "rivista_domino" / "podcasts"
 
 
 def test_config_supports_external_audiobook_output_dir(tmp_path: Path) -> None:
@@ -2756,6 +2768,109 @@ def test_sync_feed_force_redownloads_and_forces_audio_regeneration(
     assert downloaded == [article_url]
     assert spoken == [existing_dir]
     assert speak_kwargs[0]["force"] is True
+
+
+def test_outputs_command_regenerates_podcast_outputs(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "exports"
+    podcast_dir = tmp_path / "published-podcast"
+    article_dir = (
+        output_dir / "library" / "la-settimana-di-domino" / "2026-04-24-usa-e-globalizzazione"
+    )
+    article_dir.mkdir(parents=True)
+    (article_dir / "metadata.json").write_text(
+        '{"title": "USA", "published_date": "2026-04-24", "feed": "La settimana di Domino"}\n',
+        encoding="utf-8",
+    )
+    (article_dir / "2026-04-24-usa-e-globalizzazione.mp3").write_bytes(b"audio")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_dir = "{output_dir}"',
+                f'podcast_output_dir = "{podcast_dir}"',
+                'podcast_base_url = "https://podcasts.example.test/domino"',
+                'podcast_audio_format = "mp3"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        podcast_outputs,
+        "_download_artwork",
+        lambda _url: b"official-domino-png",
+    )
+
+    result = cli.main(["--config", str(config_path), "outputs", "--all", "--no-apple-podcasts"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "podcast_feeds: 1" in captured.out
+    assert f"podcast_index: {podcast_dir / 'index.html'}" in captured.out
+    assert (
+        podcast_dir / "la-settimana-di-domino" / "2026-04-24-usa-e-globalizzazione.mp3"
+    ).exists()
+    assert (podcast_dir / "la-settimana-di-domino" / "cover.png").read_bytes() == (
+        b"official-domino-png"
+    )
+    feed = (podcast_dir / "la-settimana-di-domino" / "feed.xml").read_text(encoding="utf-8")
+    assert "https://podcasts.example.test/domino/la-settimana-di-domino/feed.xml" not in feed
+    assert (
+        "https://podcasts.example.test/domino/la-settimana-di-domino/"
+        "2026-04-24-usa-e-globalizzazione.mp3"
+    ) in feed
+    assert "2026-04-24-usa-e-globalizzazione/" not in feed
+    index = (podcast_dir / "index.html").read_text(encoding="utf-8")
+    assert "https://podcasts.example.test/domino/la-settimana-di-domino/feed.xml" in index
+    assert "pcast://podcasts.example.test" not in index
+
+
+def test_sync_feed_podcast_audio_format_overrides_default(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_dir = "{output_dir}"',
+                "audio_auto = true",
+                'audio_format = "m4a"',
+                "podcast_auto = true",
+                'podcast_audio_format = "mp3"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    audio_formats: list[str] = []
+    podcast_formats: list[str] = []
+
+    def fake_discover_feed_articles(config: AppConfig, *, max_pages: int) -> list[Link]:
+        del config, max_pages
+        return []
+
+    def fake_download_new_articles(*args: object, **kwargs: object) -> int:
+        del args
+        audio_formats.append(str(kwargs["audio_format"]))
+        return 0
+
+    def fake_generate_podcast_outputs(*args: object, **kwargs: object) -> dict[str, int | None]:
+        del args
+        podcast_formats.append(str(kwargs["audio_format"]))
+        return {"rss": 0, "index": None}
+
+    monkeypatch.setattr(cli, "discover_feed_articles", fake_discover_feed_articles)
+    monkeypatch.setattr(cli, "_download_new_articles", fake_download_new_articles)
+    monkeypatch.setattr(cli, "generate_podcast_outputs", fake_generate_podcast_outputs)
+
+    result = cli.main(["--config", str(config_path), "sync-feed"])
+
+    assert result == 0
+    assert audio_formats == ["mp3"]
+    assert podcast_formats == ["mp3"]
 
 
 def test_sync_magazine_uses_tabular_output(
