@@ -414,6 +414,7 @@ def generate_podcast_outputs(
     audio_format: str,
     apple_podcasts: bool = True,
 ) -> dict[str, int | Path | None]:
+    validate_podcast_output_dir(library_dir, podcast_output_dir)
     library_dir.mkdir(parents=True, exist_ok=True)
     podcast_output_dir.mkdir(parents=True, exist_ok=True)
     normalized_format = normalize_podcast_audio_format(audio_format)
@@ -444,6 +445,15 @@ def generate_podcast_outputs(
         else None
     )
     return {"rss": rss_count, "index": index_path}
+
+
+def validate_podcast_output_dir(library_dir: Path, podcast_output_dir: Path) -> None:
+    normalized_library_dir = _normalized_path(library_dir)
+    normalized_podcast_output_dir = _normalized_path(podcast_output_dir)
+    if normalized_library_dir == normalized_podcast_output_dir:
+        raise ValueError("podcast_output_dir must not be library_dir.")
+    if normalized_podcast_output_dir.is_relative_to(normalized_library_dir):
+        raise ValueError("podcast_output_dir must not be inside library_dir.")
 
 
 def _prepare_podcast_collections(
@@ -478,6 +488,14 @@ def _prepare_podcast_collections(
             )
         )
     return collections
+
+
+def _normalized_path(path: Path) -> Path:
+    return (
+        Path.cwd().joinpath(path).resolve(strict=False)
+        if not path.is_absolute()
+        else path.resolve(strict=False)
+    )
 
 
 def _remove_stale_collection_output(target_collection_dir: Path) -> None:

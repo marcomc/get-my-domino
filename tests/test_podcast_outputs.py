@@ -8,6 +8,7 @@ import get_my_domino.podcast_outputs as podcast_outputs
 from get_my_domino.podcast_outputs import (
     FeedCollectionDetails,
     generate_podcast_outputs,
+    validate_podcast_output_dir,
     write_feed_collection_details,
 )
 
@@ -149,6 +150,32 @@ def test_generate_podcast_outputs_removes_stale_collection_when_format_has_no_au
     assert result == {"rss": 0, "index": podcast_dir / "index.html"}
     assert not stale_collection_dir.exists()
     assert "La settimana di Domino" not in (podcast_dir / "index.html").read_text(encoding="utf-8")
+
+
+def test_generate_podcast_outputs_rejects_output_dir_inside_library(tmp_path: Path) -> None:
+    library_dir = tmp_path / "library"
+    podcast_dir = library_dir / "published-podcast"
+    article_dir = library_dir / "la-settimana-di-domino" / "2026-04-24-usa-e-globalizzazione"
+    article_dir.mkdir(parents=True)
+    (article_dir / "metadata.json").write_text(
+        '{"title": "USA", "published_date": "2026-04-24"}\n',
+        encoding="utf-8",
+    )
+    (article_dir / "2026-04-24-usa-e-globalizzazione.m4a").write_bytes(b"audio-m4a")
+
+    try:
+        generate_podcast_outputs(library_dir, podcast_dir, rss=True, audio_format="mp3")
+    except ValueError as error:
+        assert "podcast_output_dir must not be inside library_dir" in str(error)
+    else:
+        raise AssertionError("expected overlapping output directory to be rejected")
+
+    assert article_dir.exists()
+    assert (article_dir / "metadata.json").exists()
+
+
+def test_validate_podcast_output_dir_accepts_sibling_output_dir(tmp_path: Path) -> None:
+    validate_podcast_output_dir(tmp_path / "library", tmp_path / "podcasts")
 
 
 def test_generate_podcast_outputs_ignores_m4b_files(tmp_path: Path) -> None:
