@@ -418,10 +418,18 @@ def generate_podcast_outputs(
     library_dir.mkdir(parents=True, exist_ok=True)
     podcast_output_dir.mkdir(parents=True, exist_ok=True)
     normalized_format = normalize_podcast_audio_format(audio_format)
-    collections = _prepare_podcast_collections(
-        library_dir,
-        podcast_output_dir,
-        audio_format=normalized_format,
+    collections = (
+        _prepare_podcast_collections(
+            library_dir,
+            podcast_output_dir,
+            audio_format=normalized_format,
+        )
+        if rss
+        else _read_podcast_collections(
+            library_dir,
+            podcast_output_dir,
+            audio_format=normalized_format,
+        )
     )
     rss_count = 0
     for collection in collections:
@@ -484,6 +492,36 @@ def _prepare_podcast_collections(
                 output_dir=target_collection_dir,
                 details=details,
                 episodes=episodes,
+                artwork_path=artwork_path,
+            )
+        )
+    return collections
+
+
+def _read_podcast_collections(
+    library_dir: Path,
+    podcast_output_dir: Path,
+    *,
+    audio_format: str,
+) -> list[PodcastCollectionOutput]:
+    collections: list[PodcastCollectionOutput] = []
+    for source_collection_dir in _iter_collection_dirs(library_dir):
+        details = _collection_details(source_collection_dir)
+        target_collection_dir = podcast_output_dir / (details.slug or source_collection_dir.name)
+        target_episodes = _collection_published_episodes(
+            source_collection_dir,
+            target_collection_dir,
+            audio_format=audio_format,
+        )
+        if not target_episodes:
+            continue
+        artwork_path = _collection_artwork_path(details, target_collection_dir)
+        collections.append(
+            PodcastCollectionOutput(
+                source_dir=source_collection_dir,
+                output_dir=target_collection_dir,
+                details=details,
+                episodes=tuple(target_episodes),
                 artwork_path=artwork_path,
             )
         )
@@ -588,6 +626,18 @@ def _ensure_collection_artwork(
     except OSError:
         return None
     return target_artwork
+
+
+def _collection_artwork_path(
+    details: FeedCollectionDetails,
+    target_collection_dir: Path,
+) -> Path | None:
+    if details.artwork_file:
+        target_artwork = target_collection_dir / details.artwork_file
+        if target_artwork.exists():
+            return target_artwork
+    target_artwork = target_collection_dir / PODCAST_REMOTE_ARTWORK_FILE
+    return target_artwork if target_artwork.exists() else None
 
 
 def _download_artwork(url: str) -> bytes:
@@ -703,6 +753,63 @@ def _collection_episodes(collection_dir: Path, *, audio_format: str) -> list[Pod
                 title=title,
                 guid=guid,
                 link=_metadata_string(metadata, "url") or "",
+                published_at=published_at,
+                published_date=published_date or _date_from_timestamp(published_at),
+                audio_path=audio_path,
+            )
+        )
+    return episodes
+
+
+def _collection_published_episodes(
+    source_collection_dir: Path,
+    target_collection_dir: Path,
+    *,
+    audio_format: str,
+) -> list[PodcastEpisode]:
+    episodes: list[PodcastEpisode] = []
+    for source_episode in _collection_episodes(source_collection_dir, audio_format=audio_format):
+        target_audio_path = target_collection_dir / source_episode.audio_path.name
+        if not target_audio_path.exists():
+            continue
+        episodes.append(
+            PodcastEpisode(
+                title=source_episode.title,
+                guid=source_episode.guid,
+                link=source_episode.link,
+                published_at=source_episode.published_at,
+                published_date=source_episode.published_date,
+                audio_path=target_audio_path,
+            )
+        )
+    if episodes:
+        return episodes
+    return _published_audio_episodes(source_collection_dir, target_collection_dir)
+
+
+def _published_audio_episodes(
+    source_collection_dir: Path,
+    target_collection_dir: Path,
+) -> list[PodcastEpisode]:
+    try:
+        audio_paths = [
+            path
+            for path in sorted(
+                target_collection_dir.iterdir(), key=lambda item: item.name.casefold()
+            )
+            if path.is_file() and path.suffix.lower() in PODCAST_AUDIO_SUFFIXES
+        ]
+    except OSError:
+        return []
+    episodes: list[PodcastEpisode] = []
+    for audio_path in audio_paths:
+        published_date = _date_from_name(audio_path.stem)
+        published_at = _published_at(published_date, fallback_path=audio_path)
+        episodes.append(
+            PodcastEpisode(
+                title=_title_from_slug(audio_path.stem),
+                guid=f"{source_collection_dir.name}/{audio_path.name}",
+                link="",
                 published_at=published_at,
                 published_date=published_date or _date_from_timestamp(published_at),
                 audio_path=audio_path,

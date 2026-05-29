@@ -178,6 +178,43 @@ def test_validate_podcast_output_dir_accepts_sibling_output_dir(tmp_path: Path) 
     validate_podcast_output_dir(tmp_path / "library", tmp_path / "podcasts")
 
 
+def test_generate_podcast_outputs_preserves_existing_feed_on_index_only_format_mismatch(
+    tmp_path: Path,
+) -> None:
+    library_dir = tmp_path / "library"
+    podcast_dir = tmp_path / "podcasts"
+    collection_dir = library_dir / "la-settimana-di-domino"
+    article_dir = collection_dir / "2026-04-24-usa-e-globalizzazione"
+    article_dir.mkdir(parents=True)
+    write_feed_collection_details(
+        collection_dir,
+        FeedCollectionDetails(
+            slug="la-settimana-di-domino",
+            title="La settimana di Domino",
+            author="Domino",
+            description="La raccolta settimanale.",
+            page_url="",
+        ),
+    )
+    (article_dir / "metadata.json").write_text(
+        '{"title": "USA", "published_date": "2026-04-24"}\n',
+        encoding="utf-8",
+    )
+    (article_dir / "2026-04-24-usa-e-globalizzazione.mp3").write_bytes(b"audio-mp3")
+    generate_podcast_outputs(library_dir, podcast_dir, rss=True, index=True, audio_format="mp3")
+    published_collection_dir = podcast_dir / "la-settimana-di-domino"
+    feed_path = published_collection_dir / "feed.xml"
+    audio_path = published_collection_dir / "2026-04-24-usa-e-globalizzazione.mp3"
+    assert feed_path.exists()
+    assert audio_path.exists()
+
+    result = generate_podcast_outputs(library_dir, podcast_dir, index=True, audio_format="m4a")
+
+    assert result == {"rss": 0, "index": podcast_dir / "index.html"}
+    assert feed_path.exists()
+    assert audio_path.exists()
+
+
 def test_generate_podcast_outputs_ignores_m4b_files(tmp_path: Path) -> None:
     library_dir = tmp_path / "library"
     podcast_dir = tmp_path / "podcasts"
