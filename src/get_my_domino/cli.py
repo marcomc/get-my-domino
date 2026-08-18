@@ -42,6 +42,13 @@ from .config import (
 )
 from .extract import article_date_from_url, issue_code_from_text, slugify
 from .models import Article, Issue, Link
+from .podcast_outputs import (
+    DOMINO_OFFICIAL_ARTWORK_URL,
+    FeedCollectionDetails,
+    ensure_feed_collection_details,
+    generate_podcast_outputs,
+    normalize_podcast_audio_format,
+)
 from .session_store import clear_cookies
 from .speech_normalize import (
     SpeechNormalizeError,
@@ -79,6 +86,7 @@ COMMAND_NAMES = (
     "sync",
     "sync-feed",
     "sync-weekly",
+    "outputs",
     "refresh-issue-metadata",
     "repackage-audiobook",
     "rename-audiobooks",
@@ -139,6 +147,7 @@ def format_main_help() -> str:
             "  download      Download selected URLs or articles from one issue",
             "  sync-magazine Download new magazine articles",
             "  sync-feed     Download new weekly feed articles",
+            "  outputs       Regenerate podcast RSS and HTML index outputs",
             "  refresh-issue-metadata Refresh metadata.json and issue.json for downloaded issues",
             "  repackage-audiobook Refresh issue metadata and rebuild issue audiobooks",
             "  speech-normalize Prepare downloaded text for text-to-speech",
@@ -350,6 +359,75 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Number of feed archive pages to scan. Defaults to 1.",
+    )
+    sync_feed_parser.add_argument(
+        "--podcast",
+        action="store_true",
+        default=False,
+        help="Regenerate podcast RSS and index outputs after syncing.",
+    )
+    sync_feed_parser.add_argument(
+        "--no-podcast",
+        action="store_true",
+        default=False,
+        help="Do not regenerate podcast outputs even when config podcast_auto is enabled.",
+    )
+    sync_feed_parser.add_argument(
+        "--podcast-base-url",
+        help="Public base URL used for podcast enclosure and feed links.",
+    )
+    sync_feed_parser.add_argument(
+        "--podcast-output-dir",
+        type=Path,
+        help="Directory where podcast index, feeds, artwork, and flat audio copies are written.",
+    )
+    sync_feed_parser.add_argument(
+        "--no-apple-podcasts",
+        dest="apple_podcasts",
+        action="store_false",
+        default=None,
+        help="Omit pcast:// Apple Podcasts links from the generated index.",
+    )
+
+    outputs_parser = subparsers.add_parser(
+        "outputs",
+        help="Regenerate podcast RSS and HTML index outputs from local feed audio.",
+    )
+    outputs_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Regenerate every podcast output.",
+    )
+    outputs_parser.add_argument(
+        "--rss",
+        action="store_true",
+        help="Regenerate feed.xml for local recurring feed folders.",
+    )
+    outputs_parser.add_argument(
+        "--index",
+        action="store_true",
+        help="Regenerate the root podcast index.html.",
+    )
+    outputs_parser.add_argument(
+        "--podcast-base-url",
+        help="Public base URL used for podcast enclosure and feed links.",
+    )
+    outputs_parser.add_argument(
+        "--podcast-output-dir",
+        type=Path,
+        help="Directory where podcast index, feeds, artwork, and flat audio copies are written.",
+    )
+    outputs_parser.add_argument(
+        "--audio-format",
+        choices=["m4a", "mp4a", "mp3"],
+        help="Existing audio format to expose in podcast feeds.",
+    )
+    outputs_parser.add_argument(
+        "--no-apple-podcasts",
+        dest="apple_podcasts",
+        action="store_false",
+        default=None,
+        help="Omit pcast:// Apple Podcasts links from the generated index.",
     )
 
     refresh_issue_parser = subparsers.add_parser(
@@ -723,6 +801,64 @@ def _feed_output_dir(root_output_dir: Path, config: AppConfig) -> Path:
 def _audiobooks_dir(root_output_dir: Path, config: AppConfig) -> Path:
     del root_output_dir
     return config.audiobooks_dir
+
+
+def _podcast_requested(args: argparse.Namespace, config: AppConfig) -> bool:
+    if bool(getattr(args, "no_podcast", False)):
+        return False
+    return bool(getattr(args, "podcast", False)) or config.podcast_auto
+
+
+def _podcast_base_url(args: argparse.Namespace, config: AppConfig) -> str:
+    return str(getattr(args, "podcast_base_url", None) or config.podcast_base_url).rstrip("/")
+
+
+def _podcast_output_dir(args: argparse.Namespace, config: AppConfig) -> Path:
+    return Path(getattr(args, "podcast_output_dir", None) or config.podcasts_dir).expanduser()
+
+
+def _podcast_audio_format(
+    args: argparse.Namespace,
+    config: AppConfig,
+    *,
+    default_format: str | None = None,
+) -> str:
+    raw_format = (
+        str(getattr(args, "audio_format", "") or "")
+        or config.podcast_audio_format
+        or default_format
+        or config.audio_format
+    )
+    return normalize_podcast_audio_format(raw_format)
+
+
+def _podcast_apple_podcasts(args: argparse.Namespace, config: AppConfig) -> bool:
+    override = getattr(args, "apple_podcasts", None)
+    if override is not None:
+        return bool(override)
+    return config.podcast_apple_podcasts
+
+
+def _ensure_default_feed_collection_details(config: AppConfig) -> None:
+    ensure_feed_collection_details(
+        _feed_output_dir(config.output_dir, config),
+        FeedCollectionDetails(
+            slug=config.feed_folder_name,
+            title="La settimana di Domino",
+            author=config.magazine_title,
+            description="Articoli ricorrenti dalla rubrica La settimana di Domino.",
+            page_url=config.feed_index_url,
+            artwork_url=DOMINO_OFFICIAL_ARTWORK_URL,
+        ),
+    )
+
+
+def _print_podcast_outputs(result: dict[str, int | Path | None]) -> None:
+    if "rss" in result:
+        print(f"podcast_feeds: {result['rss']}")
+    index_path = result.get("index")
+    if index_path:
+        print(f"podcast_index: {index_path}")
 
 
 def _ensure_storage_layout(root_output_dir: Path, config: AppConfig) -> None:
@@ -1219,6 +1355,11 @@ def _handle_info(config: AppConfig, config_path: Path, as_json: bool) -> int:
     print(f"audio_chunk_concurrency: {config.audio_chunk_concurrency}")
     print(f"audio_chunk_retries: {config.audio_chunk_retries}")
     print(f"audio_stall_timeout: {config.audio_stall_timeout}")
+    print(f"podcast_auto: {config.podcast_auto}")
+    print(f"podcast_base_url: {config.podcast_base_url}")
+    print(f"podcast_output_dir: {config.podcasts_dir}")
+    print(f"podcast_audio_format: {config.podcast_audio_format}")
+    print(f"podcast_apple_podcasts: {config.podcast_apple_podcasts}")
     print(f"speech_normalize_auto: {config.speech_normalize_auto}")
     print(f"speech_normalize_agent: {config.speech_normalize_agent}")
     print(f"speech_normalize_command: {config.speech_normalize_command}")
@@ -3020,9 +3161,14 @@ def _handle_sync_feed(
     max_articles: int | None,
     pages: int,
     force: bool = False,
+    podcast: bool = False,
+    podcast_base_url: str = "",
+    podcast_output_dir: Path | None = None,
+    podcast_audio_format: str = "m4a",
+    podcast_apple_podcasts: bool = True,
 ) -> int:
     links = discover_feed_articles(config, max_pages=pages)
-    return _download_new_articles(
+    result = _download_new_articles(
         links,
         config=config,
         output_dir=_feed_output_dir(config.output_dir, config),
@@ -3039,6 +3185,19 @@ def _handle_sync_feed(
         max_articles=max_articles,
         force=force,
     )
+    if podcast:
+        _ensure_default_feed_collection_details(config)
+        podcast_result = generate_podcast_outputs(
+            config.library_dir,
+            podcast_output_dir or config.podcasts_dir,
+            podcast_base_url,
+            rss=True,
+            index=True,
+            audio_format=podcast_audio_format,
+            apple_podcasts=podcast_apple_podcasts,
+        )
+        _print_podcast_outputs(podcast_result)
+    return result
 
 
 def _handle_refresh_issue_metadata(
@@ -3537,8 +3696,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command in {"sync-feed", "sync-weekly"}:
             _ensure_storage_layout(config.output_dir, config)
             audio_options = _audio_options(args, config)
+            podcast_enabled = _podcast_requested(args, config)
+            if (
+                podcast_enabled
+                and getattr(args, "audio_format", None) is None
+                and config.podcast_audio_format
+            ):
+                audio_options = replace(audio_options, audio_format=config.podcast_audio_format)
             speech_options = _speech_normalize_options(args, config)
             export_formats = _export_format_options(args, config)
+            podcast_audio_format = _podcast_audio_format(
+                args,
+                config,
+                default_format=audio_options.audio_format,
+            )
             return _handle_sync_feed(
                 config,
                 create_audio=audio_options.create,
@@ -3554,7 +3725,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_articles=args.max_articles,
                 pages=int(args.pages),
                 force=bool(args.force),
+                podcast=podcast_enabled,
+                podcast_base_url=_podcast_base_url(args, config),
+                podcast_output_dir=_podcast_output_dir(args, config),
+                podcast_audio_format=podcast_audio_format,
+                podcast_apple_podcasts=_podcast_apple_podcasts(args, config),
             )
+        if args.command == "outputs":
+            _ensure_storage_layout(config.output_dir, config)
+            rss = bool(args.rss or args.all)
+            index = bool(args.index or args.all)
+            if not rss and not index:
+                raise ValueError("outputs requires at least one of --rss, --index, or --all.")
+            _ensure_default_feed_collection_details(config)
+            result = generate_podcast_outputs(
+                config.library_dir,
+                _podcast_output_dir(args, config),
+                _podcast_base_url(args, config),
+                rss=rss,
+                index=index,
+                audio_format=_podcast_audio_format(args, config),
+                apple_podcasts=_podcast_apple_podcasts(args, config),
+            )
+            _print_podcast_outputs(result)
+            return 0
         if args.command == "refresh-issue-metadata":
             root_output_dir = args.output_dir or config.output_dir
             config = replace(config, output_dir=root_output_dir)

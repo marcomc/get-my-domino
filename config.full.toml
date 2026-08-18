@@ -43,6 +43,15 @@ audio_chunk_concurrency = 4
 audio_chunk_retries = 2
 audio_stall_timeout = 45
 
+# Podcast Outputs
+podcast_auto = false
+podcast_base_url = ""
+# Leave unset to keep published podcast files under output_dir/podcasts.
+podcast_output_dir = ""
+# Leave empty to expose the same format as audio_format, or set "mp3"/"m4a".
+podcast_audio_format = ""
+podcast_apple_podcasts = true
+
 # Audiobooks
 audiobook_auto = false
 magazine_title = "Domino"

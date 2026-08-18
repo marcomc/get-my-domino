@@ -83,6 +83,11 @@ class AppConfig:
     audio_chunk_concurrency: int = 4
     audio_chunk_retries: int = 2
     audio_stall_timeout: float = 45.0
+    podcast_auto: bool = False
+    podcast_base_url: str = ""
+    podcast_output_dir: Path | None = None
+    podcast_audio_format: str = ""
+    podcast_apple_podcasts: bool = True
     speech_normalize_auto: bool = False
     speech_normalize_agent: str = "codex"
     speech_normalize_command: str = "codex"
@@ -111,6 +116,10 @@ class AppConfig:
     @property
     def audiobooks_dir(self) -> Path:
         return self.audiobook_output_dir or (self.output_dir / "audiobooks")
+
+    @property
+    def podcasts_dir(self) -> Path:
+        return self.podcast_output_dir or (self.output_dir / "podcasts")
 
     def with_cli_overrides(self, *, verbose: bool) -> "AppConfig":
         if not verbose:
@@ -144,6 +153,13 @@ def _optional_path(value: object) -> Path | None:
     if not normalized:
         return None
     return Path(normalized).expanduser()
+
+
+def _optional_audio_format(value: object) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        return ""
+    return normalize_audio_format(normalized)
 
 
 def load_config(path: Path) -> AppConfig:
@@ -248,6 +264,11 @@ def load_config(path: Path) -> AppConfig:
             key="audio_chunk_retries",
         ),
         audio_stall_timeout=normalize_audio_timeout(data.get("audio_stall_timeout", 45.0)),
+        podcast_auto=bool(data.get("podcast_auto", False)),
+        podcast_base_url=str(data.get("podcast_base_url", "")).rstrip("/"),
+        podcast_output_dir=_optional_path(data.get("podcast_output_dir")),
+        podcast_audio_format=_optional_audio_format(data.get("podcast_audio_format", "")),
+        podcast_apple_podcasts=bool(data.get("podcast_apple_podcasts", True)),
         speech_normalize_auto=bool(data.get("speech_normalize_auto", False)),
         speech_normalize_agent=str(data.get("speech_normalize_agent", "codex")),
         speech_normalize_command=str(data.get("speech_normalize_command", "codex")),

@@ -26,6 +26,15 @@ siri_voice = ""
 audio_auto = false
 audio_format = "m4a"
 
+# Podcast Outputs
+podcast_auto = false
+podcast_base_url = ""
+# Leave unset to keep published podcast files under output_dir/podcasts.
+# podcast_output_dir = "~/Podcasts/Domino"
+# Leave empty to expose the same format as audio_format, or set "mp3"/"m4a".
+podcast_audio_format = ""
+podcast_apple_podcasts = true
+
 # Audiobooks
 audiobook_auto = false
 magazine_title = "Domino"

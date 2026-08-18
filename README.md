@@ -60,6 +60,9 @@ and publishing company for the digital offering.
   does not read them aloud, and speech-normalized runs record prompt and
   source metadata for reuse/invalidation
 - Incremental `sync-magazine` and `sync-feed` commands with local manifests
+- Podcast `feed.xml`, flat episode-audio copies, artwork, and static
+  `index.html` generation for recurring article collections such as
+  `La settimana di Domino`
 - Optional `.m4a` or `.mp3` synthesis through macOS `say` and `afconvert`
 - Optional full-issue `.m4b` audiobook packaging with chapter markers, embedded
   cover art, and issue metadata when downloading or syncing magazine issues
@@ -175,6 +178,11 @@ siri_voice = ""
 audio_auto = false
 audiobook_auto = false
 audio_format = "m4a"
+podcast_auto = false
+podcast_base_url = ""
+podcast_output_dir = ""
+podcast_audio_format = ""
+podcast_apple_podcasts = true
 speech_normalize_auto = false
 speech_normalize_command = "codex"
 speech_normalize_model = ""
@@ -278,6 +286,7 @@ Command intent:
 | `download` | Downloads known targets by URL, one issue article, or one whole issue | Manual, targeted downloads and repairs |
 | `sync-magazine` | Scans every available magazine issue and downloads only missing articles; with `--audio`, also generates missing audio for already synced articles | Periodic archive updates and automation |
 | `sync-feed` | Scans the recurring weekly feed and downloads only missing articles; with `--audio`, also generates missing audio for already synced feed articles | Periodic weekly-feed updates and automation |
+| `outputs` | Regenerates podcast `feed.xml` files and the static `index.html` from local feed audio | Publishing local feed collections through a static host or podcast proxy |
 | `refresh-issue-metadata` | Re-reads downloaded issue articles from the live site and refreshes local `metadata.json` plus `issue.json` | Metadata repairs after parser improvements or site changes |
 | `repackage-audiobook` | Runs issue-metadata refresh, then rebuilds the issue `.m4b` from existing chapter audio | Audiobook tag and cover repairs without re-synthesizing audio |
 | `rename-audiobooks` | Renames existing `.m4b` files from embedded tags using the configured filename template | Normalizing an audiobook library after changing naming rules |
@@ -558,6 +567,7 @@ Scan `La settimana di Domino` and save it under
 ```bash
 get-my-domino sync-feed
 get-my-domino sync-feed --audio --pages 3
+get-my-domino sync-feed --audio --audio-format mp3 --podcast --podcast-base-url http://podcasts.example.test/domino
 get-my-domino sync-feed --audio --force
 ```
 
@@ -565,6 +575,40 @@ get-my-domino sync-feed --audio --force
 present in the local manifest and generate missing audio from local exports.
 Use `--force` on sync commands only when you want to refetch/rewrite existing
 article exports and regenerate their audio.
+
+`sync-feed --podcast` regenerates podcast outputs after the sync. Article
+exports and source audio stay under `output_dir/library`, while the publishable
+podcast tree is written under `podcast_output_dir`, which defaults to
+`output_dir/podcasts`. The podcast tree contains a root `index.html`, a root
+`apple-touch-icon.png`, and one folder per recurring feed collection. Each
+collection folder contains a flat copy of its episode audio files plus its
+`feed.xml`, so published URLs do not include the long article folder name. You
+can also regenerate those files later without fetching Domino again:
+
+```bash
+get-my-domino outputs --all --podcast-base-url http://podcasts.example.test/domino
+get-my-domino outputs --rss --index --audio-format mp3 --no-apple-podcasts
+```
+
+`podcast_base_url` must be the public URL that serves `podcast_output_dir`.
+Podcast enclosure URLs are written as:
+
+```text
+<podcast_base_url>/<feed_folder_name>/<audio_file>
+```
+
+For the broadest podcast-client compatibility, generate feed episodes as
+`.mp3` or `.m4a` files. Set `podcast_audio_format = "mp3"` to make
+podcast-enabled feed syncs use MP3 without changing the magazine audiobook
+format. Apple Podcasts documents RSS episodes as supporting M4A and MP3 and
+recommends AAC in an MP4 container for RSS feeds; it does not list M4B as a
+normal RSS episode format. This tool therefore exposes article audio files as
+podcast episodes and does not publish issue `.m4b` audiobooks in the podcast
+RSS feed.
+
+The podcast landing page uses the Domino touch icon for `La settimana di
+Domino` and writes a generated red-and-black Domino `apple-touch-icon.png` next
+to the root `index.html`.
 
 Feed articles are saved with date-first names, for example:
 
