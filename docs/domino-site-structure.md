@@ -152,8 +152,19 @@ The feed walker:
 
 - starts at `feed_index_url`
 - extracts links matching `feed_article_link_patterns`
+- extracts the weekly issue number from `Domino_IG_N` archive artwork when it
+  is present
 - deduplicates URLs across pages
-- follows `_next_page_url()` until `max_pages` is reached or pagination stops
+- follows `_next_page_url()` until `max_pages` is reached or pagination stops;
+  the weekly sync command leaves `max_pages` unset so it scans the complete
+  archive by default
+- new local weekly article names use an unpadded issue number prefix, such as
+  `1-...`, `20-...`, or `43-...`
+
+The current archive exposes five HTML pages containing 43 entries. WordPress
+also exposes the same category through its public REST API, but HTML archive
+pagination remains the primary discovery path because it provides the visible
+article cards and their numbered artwork together.
 
 If the feed changes shape, adjust:
 

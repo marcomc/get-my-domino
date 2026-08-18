@@ -186,6 +186,7 @@ podcast_apple_podcasts = true
 speech_normalize_auto = false
 speech_normalize_command = "codex"
 speech_normalize_model = ""
+speech_normalize_backup_model = ""
 speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
 magazine_title = "Domino"
 filename_separator = "-"
@@ -566,10 +567,18 @@ Scan `La settimana di Domino` and save it under
 
 ```bash
 get-my-domino sync-feed
+get-my-domino sync-feed --audio
 get-my-domino sync-feed --audio --pages 3
 get-my-domino sync-feed --audio --audio-format mp3 --podcast --podcast-base-url http://podcasts.example.test/domino
 get-my-domino sync-feed --audio --force
 ```
+
+`sync-feed` scans the complete paginated archive by default. Use `--pages N`
+only to limit discovery for a smoke test or diagnostic run. Weekly issue
+numbers are included without zero-padding in newly created feed article folder
+and audio filenames, such as `1-...`, `20-...`, or `43-...`.
+Existing archives require a one-time maintenance rename before the first
+numbered sync.
 
 `sync-feed --audio` and `sync-magazine --audio` also inspect articles already
 present in the local manifest and generate missing audio from local exports.
@@ -667,11 +676,13 @@ The default prompt is installed as a user-editable file at
 different prompt template. The template must keep the placeholders
 `{output_path}`, `{source_text_path}`, and `{normalized_text}`.
 
-Model selection for Codex speech normalization already works at all three
-layers:
+Model selection for Codex speech normalization works at all three layers, and
+can include a backup model:
 
-- config file with `speech_normalize_model = "gpt-5.3-codex-spark"`
-- command line with `--speech-normalize-model gpt-5.3-codex-spark`
+- config file with `speech_normalize_model = "gpt-5.6-luna"` and
+  `speech_normalize_backup_model = "gpt-5.6-terra"`
+- command line with `--speech-normalize-model gpt-5.6-luna
+  --speech-normalize-backup-model gpt-5.6-terra`
 - direct Codex invocation, because the CLI passes `-m <model>` through to
   `codex exec`
 
@@ -680,62 +691,35 @@ Examples:
 ```bash
 get-my-domino speak /path/to/article-dir \
   --speech-normalize \
-  --speech-normalize-model gpt-5.3-codex-spark
+  --speech-normalize-model gpt-5.6-luna \
+  --speech-normalize-backup-model gpt-5.6-terra
 
 get-my-domino sync-magazine \
   --audio \
   --speech-normalize \
-  --speech-normalize-model gpt-5.3-codex-spark
+  --speech-normalize-model gpt-5.6-luna \
+  --speech-normalize-backup-model gpt-5.6-terra
 ```
 
-If you want Spark as your default for speech normalization, set:
+Keep Spark as the portable default, and configure Luna as the local-account
+backup:
 
 ```toml
 speech_normalize_model = "gpt-5.3-codex-spark"
+speech_normalize_backup_model = "gpt-5.6-luna"
 ```
 
-Current OpenAI model availability for this setting, verified against official
-OpenAI docs on April 29, 2026:
+The local account was tested on 2026-08-18 with `codex exec`: `gpt-5.6-luna`,
+`gpt-5.6-terra`, `gpt-5.5`, and `gpt-5.4-mini` were accepted. `gpt-5.3-codex`,
+`gpt-5.3-codex-spark`, and `gpt-5.4` were rejected for this ChatGPT account.
+Availability is account-specific and can change, so another account can still
+use Spark as the primary model.
 
-- Recommended default here, when your account has access:
-  `gpt-5.3-codex-spark`
-- General Codex model examples documented by OpenAI today:
-  `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`,
-  `gpt-5.3-codex-spark`
-- General API model IDs documented by OpenAI today:
-  `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`,
-  `gpt-5.4-nano`, `gpt-5.3-codex`
-
-OpenAI currently documents the following plan-level availability:
-
-- ChatGPT subscriptions:
-  all users have GPT-5.3 by default; GPT-5.5 is rolling out in ChatGPT to
-  Plus, Pro, Business, and Enterprise; GPT-5.5 Pro is for Pro, Business, and
-  Enterprise; GPT-5.4 Thinking remains the earlier paid-tier reasoning model;
-  GPT-5.4 mini is available to Free and Go users through Thinking and as a
-  fallback for paid GPT-5.4 Thinking users
-- Codex subscriptions:
-  GPT-5.5 is available in Codex for Plus, Pro, Business, Enterprise, Edu, and
-  Go plans; the Codex rate card also currently lists GPT-5.4, GPT-5.4-Mini,
-  GPT-5.3-Codex, and GPT-5.3-Codex-Spark as a research preview
-- API:
-  the current primary GPT family listed by OpenAI is GPT-5.5, GPT-5.5 Pro,
-  GPT-5.4, GPT-5.4 Pro, GPT-5.4 mini, GPT-5.4 nano, plus GPT-5.3-Codex for
-  coding workflows
-
-Important availability note: `gpt-5.3-codex-spark` launched on February 12,
-2026 as a research preview in Codex for ChatGPT Pro users, and OpenAI’s Codex
-rate card still describes it as a research preview with non-final credit rates.
-OpenAI also says Codex-Spark is in the API only for a small set of design
-partners, so you should not assume general API access to Spark.
-
-For `get-my-domino`, the practical rule is:
-
-- if you want the cheapest Codex option and your Codex account exposes it, set
-  `speech_normalize_model = "gpt-5.3-codex-spark"`
-- if Spark is not available on your account, fall back to
-  `gpt-5.4-mini` or `gpt-5.3-codex` depending on whether you prefer lower cost
-  or stronger coding-oriented behavior
+When both model names are configured, normalization tries the primary model,
+then the backup model. If both fail, the command asks for an explicit choice:
+select another model or rerun with `--no-speech-normalize`. The original `.txt`
+is used only when `speech_normalize_fallback = true` is explicitly configured
+or passed on the command line.
 
 Speech normalization config:
 
@@ -745,9 +729,10 @@ Speech normalization config:
 | `speech_normalize_agent` | AI backend name. Only `codex` is implemented; other configured backend names are reserved for future support. |
 | `speech_normalize_command` | Executable used for the selected agent, usually `codex`; set a full path if the command is not on `PATH`. |
 | `speech_normalize_model` | Optional model name passed to the agent. Empty means the agent CLI uses its default model. |
+| `speech_normalize_backup_model` | Optional second model tried after the primary model fails. |
 | `speech_normalize_timeout` | Maximum seconds allowed for one article normalization run before stopping it. |
 | `speech_normalize_force` | Regenerate `.speech.txt` even when a reusable speech file already exists. |
-| `speech_normalize_fallback` | If normalization fails, continue with the original `.txt` instead of stopping before audio. |
+| `speech_normalize_fallback` | After all configured models fail, continue with the original `.txt` instead of stopping before audio. |
 | `speech_normalize_prompt_path` | User-editable prompt template used by the normalizer. |
 
 List the exact voice names that macOS `say` accepts:

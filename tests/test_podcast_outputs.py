@@ -110,6 +110,26 @@ def test_generate_podcast_outputs_uses_requested_audio_format(tmp_path: Path) ->
     assert 'type="audio/mp4"' in feed
 
 
+def test_generate_podcast_outputs_includes_feed_number_in_episode_title(tmp_path: Path) -> None:
+    library_dir = tmp_path / "library"
+    podcast_dir = tmp_path / "podcasts"
+    collection_dir = library_dir / "la-settimana-di-domino"
+    article_dir = collection_dir / "015-2026-04-24-usa-e-globalizzazione"
+    article_dir.mkdir(parents=True)
+    (article_dir / "metadata.json").write_text(
+        '{"title": "USA e globalizzazione", "feed_number": 15, '
+        '"published_date": "2026-04-24", "feed": "La settimana di Domino"}\n',
+        encoding="utf-8",
+    )
+    (article_dir / "015-2026-04-24-usa-e-globalizzazione.mp3").write_bytes(b"audio")
+
+    generate_podcast_outputs(library_dir, podcast_dir, rss=True, audio_format="mp3")
+
+    feed = (podcast_dir / "la-settimana-di-domino" / "feed.xml").read_text(encoding="utf-8")
+    assert "<title>#15 - USA e globalizzazione</title>" in feed
+    assert "015-2026-04-24-usa-e-globalizzazione.mp3" in feed
+
+
 def test_generate_podcast_outputs_removes_stale_collection_when_format_has_no_audio(
     tmp_path: Path,
 ) -> None:

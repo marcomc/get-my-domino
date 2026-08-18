@@ -61,11 +61,13 @@ audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug
 # Speech Normalization
 #
 # Most users only need speech_normalize_auto, speech_normalize_command,
-# speech_normalize_model, and speech_normalize_prompt_path.
+# speech_normalize_model, speech_normalize_backup_model, and
+# speech_normalize_prompt_path.
 speech_normalize_auto = false
 speech_normalize_agent = "codex"
 speech_normalize_command = "codex"
 speech_normalize_model = ""
+speech_normalize_backup_model = ""
 speech_normalize_timeout = 900
 speech_normalize_force = false
 speech_normalize_fallback = false

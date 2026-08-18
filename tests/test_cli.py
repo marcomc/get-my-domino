@@ -304,6 +304,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
                 'speech_normalize_agent = "codex"',
                 'speech_normalize_command = "codex"',
                 'speech_normalize_model = "gpt-5.2"',
+                'speech_normalize_backup_model = "gpt-5.1"',
                 "speech_normalize_timeout = 456",
                 "speech_normalize_force = true",
                 "speech_normalize_fallback = true",
@@ -338,6 +339,7 @@ def test_config_reads_audio_defaults_and_normalizes_mp4a_alias(tmp_path: Path) -
     assert config.speech_normalize_agent == "codex"
     assert config.speech_normalize_command == "codex"
     assert config.speech_normalize_model == "gpt-5.2"
+    assert config.speech_normalize_backup_model == "gpt-5.1"
     assert config.speech_normalize_timeout == 456.0
     assert config.speech_normalize_force is True
     assert config.speech_normalize_fallback is True
@@ -631,12 +633,20 @@ def test_feed_articles_follow_pagination_and_deduplicate() -> None:
         {
             first_page: """
             <link rel="next" href="/blog/category/la-settimana-di-domino/page/2/">
-            <a class="article_title" href="/blog/2026/04/24/primo/">Primo</a>
-            <a class="article_title" href="/blog/2026/04/17/secondo/">Secondo</a>
+            <article><img src="/uploads/Domino_IG_3-scaled.jpg">
+              <a class="article_title" href="/blog/2026/04/24/primo/">Primo</a>
+            </article>
+            <article><img src="/uploads/Domino_IG_2-scaled.jpg">
+              <a class="article_title" href="/blog/2026/04/17/secondo/">Secondo</a>
+            </article>
             """,
             second_page: """
-            <a class="article_title" href="/blog/2026/04/17/secondo/">Secondo</a>
-            <a class="article_title" href="/blog/2026/04/10/terzo/">Terzo</a>
+            <article><img src="/uploads/Domino_IG_2-scaled.jpg">
+              <a class="article_title" href="/blog/2026/04/17/secondo/">Secondo</a>
+            </article>
+            <article><img src="/uploads/Domino_IG_1-scaled.jpg">
+              <a class="article_title" href="/blog/2026/04/10/terzo/">Terzo</a>
+            </article>
             """,
         }
     )
@@ -648,6 +658,26 @@ def test_feed_articles_follow_pagination_and_deduplicate() -> None:
     links = WebClient(config, session=session).discover_feed_articles(max_pages=2)
 
     assert [link.title for link in links] == ["Primo", "Secondo", "Terzo"]
+    assert [link.feed_number for link in links] == [3, 2, 1]
+
+
+def test_feed_articles_assign_chronological_numbers_when_images_have_none() -> None:
+    first_page = "https://example.test/feed/"
+    second_page = "https://example.test/feed/page/2/"
+    session = FakeSession(
+        {
+            first_page: (
+                '<link rel="next" href="/feed/page/2/">'
+                '<article><a href="/blog/2026/04/24/primo/">Primo</a></article>'
+            ),
+            second_page: '<a href="/blog/2026/04/10/terzo/">Terzo</a>',
+        }
+    )
+    config = AppConfig(feed_index_url=first_page, feed_article_link_patterns=("/blog/20",))
+
+    links = WebClient(config, session=session).discover_feed_articles(max_pages=None)
+
+    assert [link.feed_number for link in links] == [2, 1]
 
 
 def test_issue_articles_keep_month_groups_dates_and_order(tmp_path: Path) -> None:
@@ -2245,6 +2275,15 @@ def test_folder_names_match_feed_and_issue_conventions() -> None:
         == "01-cosa-fare-a-teheran-quando-sei-morto"
     )
     assert cli._feed_article_folder_name(feed_link) == "2026-04-24-usa-e-globalizzazione"
+    numbered_feed_link = Link(
+        title="Usa e globalizzazione",
+        url=feed_link.url,
+        published_date="2026-04-24",
+        feed_number=15,
+    )
+    assert (
+        cli._feed_article_folder_name(numbered_feed_link) == "15-2026-04-24-usa-e-globalizzazione"
+    )
 
 
 def test_extract_links_keeps_matching_links_in_order() -> None:
@@ -2523,6 +2562,7 @@ def test_audio_cli_options_default_to_config_and_allow_overrides() -> None:
 
     feed_args = parser.parse_args(["sync-feed", "--no-audio"])
     assert cli._audio_options(feed_args, config).create is False
+    assert feed_args.pages is None
 
     audiobook_no_audio_args = parser.parse_args(
         ["download", "--issue", "2026-04", "--all", "--audiobook", "--no-audio"]
@@ -2848,8 +2888,11 @@ def test_sync_feed_podcast_audio_format_overrides_default(
     audio_formats: list[str] = []
     podcast_formats: list[str] = []
 
-    def fake_discover_feed_articles(config: AppConfig, *, max_pages: int) -> list[Link]:
-        del config, max_pages
+    discovered_pages: list[int | None] = []
+
+    def fake_discover_feed_articles(config: AppConfig, *, max_pages: int | None) -> list[Link]:
+        del config
+        discovered_pages.append(max_pages)
         return []
 
     def fake_download_new_articles(*args: object, **kwargs: object) -> int:
@@ -2869,6 +2912,7 @@ def test_sync_feed_podcast_audio_format_overrides_default(
     result = cli.main(["--config", str(config_path), "sync-feed"])
 
     assert result == 0
+    assert discovered_pages == [None]
     assert audio_formats == ["mp3"]
     assert podcast_formats == ["mp3"]
 
@@ -3890,6 +3934,57 @@ def test_codex_speech_normalizer_invokes_cli_without_printing_article(
     assert "Never insert a comma between subject and predicate" in prompts[0]
     assert "Do not add expressive punctuation for drama" in prompts[0]
     assert (tmp_path / "001-editoriale.speech.log").exists()
+
+
+def test_codex_speech_normalizer_uses_backup_model_after_primary_failure(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del input, text, capture_output, timeout, check
+        commands.append(command)
+        if "gpt-5.6-terra" in command:
+            output.write_text("Titolo normalizzato", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="model unavailable")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    result = speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="gpt-5.6-luna",
+            backup_model="gpt-5.6-terra",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            prompt_path=None,
+            diff=False,
+        ),
+    )
+
+    assert result == output
+    assert len(commands) == 2
+    assert commands[0][commands[0].index("-m") + 1] == "gpt-5.6-luna"
+    assert commands[1][commands[1].index("-m") + 1] == "gpt-5.6-terra"
+    log_text = (tmp_path / "001-editoriale.speech.log").read_text(encoding="utf-8")
+    assert "model: gpt-5.6-luna" in log_text
+    assert "model: gpt-5.6-terra" in log_text
 
 
 def test_speech_normalizer_rejects_unimplemented_agents(tmp_path: Path) -> None:

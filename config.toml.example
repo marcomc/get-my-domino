@@ -44,9 +44,19 @@ audiobook_name_format = "{magazine_slug}{sep}{year}{sep}{number}{sep}{title_slug
 # Speech Normalization
 speech_normalize_auto = false
 speech_normalize_command = "codex"
-# Leave empty to use the Codex CLI default model, or set one explicitly such
-# as "gpt-5.5", "gpt-5.4-mini", or "gpt-5.3-codex-spark" when available.
+# Known Codex model IDs in the local catalog on 2026-08-18:
+# - gpt-5.6-luna       (fast, affordable; recommended backup)
+# - gpt-5.6-terra      (balanced agentic coding model)
+# - gpt-5.5            (frontier model for complex work)
+# - gpt-5.4-mini       (small, fast, cost-efficient)
+# - gpt-5.3-codex      (coding model; account availability varies)
+# - gpt-5.3-codex-spark (fast coding model; account availability varies)
+# - codex-auto-review  (review-only; not suitable for speech normalization)
+# Model availability is account-specific and can change.
+# The primary model is tried first. If it is unavailable, the backup model is
+# tried next. Availability is account-specific.
 speech_normalize_model = ""
+speech_normalize_backup_model = ""
 speech_normalize_prompt_path = "~/.config/get-my-domino/speech-normalize-codex.txt"
 
 # Authentication

@@ -92,6 +92,7 @@ class AppConfig:
     speech_normalize_agent: str = "codex"
     speech_normalize_command: str = "codex"
     speech_normalize_model: str = ""
+    speech_normalize_backup_model: str = ""
     speech_normalize_timeout: float = 900.0
     speech_normalize_force: bool = False
     speech_normalize_fallback: bool = False
@@ -273,6 +274,7 @@ def load_config(path: Path) -> AppConfig:
         speech_normalize_agent=str(data.get("speech_normalize_agent", "codex")),
         speech_normalize_command=str(data.get("speech_normalize_command", "codex")),
         speech_normalize_model=str(data.get("speech_normalize_model", "")),
+        speech_normalize_backup_model=str(data.get("speech_normalize_backup_model", "")),
         speech_normalize_timeout=normalize_audio_timeout(
             data.get("speech_normalize_timeout", 900.0)
         ),
