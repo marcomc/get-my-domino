@@ -63,6 +63,7 @@ from .storage import (
     article_text_path,
     missing_article_export_files,
     read_manifest,
+    update_article_metadata,
     write_article,
     write_article_export,
     write_article_metadata,
@@ -2730,6 +2731,14 @@ def _download_new_articles(
             output_dir=output_dir,
         )
         if existing_dir is not None and not force:
+            update_article_metadata(
+                existing_dir,
+                {
+                    "feed": "La settimana di Domino",
+                    "published_date": article_link.published_date,
+                    "feed_number": article_link.feed_number,
+                },
+            )
             if create_audio:
                 audio_dirs.append(existing_dir)
                 selected_count += 1

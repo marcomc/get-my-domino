@@ -48,6 +48,9 @@ Expected checks:
 - Keep `CHANGELOG.md` updated in `Unreleased` for user-visible changes.
 - Remove completed items from `TODO.md` when they ship.
 - Update config documentation when adding or changing config keys.
+- When reusing existing feed article directories, refresh feed-derived metadata
+  before regenerating RSS or podcast outputs so numbering and publication data
+  remain aligned with the discovered feed.
 
 ## Release Hygiene
 

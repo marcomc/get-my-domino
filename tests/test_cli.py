@@ -2665,9 +2665,12 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
     output_dir = tmp_path / "la-settimana-di-domino"
-    existing_dir = output_dir / "2026-03-20-che-succede-in-medio-oriente"
+    existing_dir = output_dir / "22-2026-03-20-che-succede-in-medio-oriente"
     existing_dir.mkdir(parents=True)
     (existing_dir / "article.txt").write_text("Test", encoding="utf-8")
+    (existing_dir / "metadata.json").write_text(
+        '{"title": "Che succede in Medio Oriente"}', encoding="utf-8"
+    )
     article_url = "https://www.rivistadomino.it/blog/2026/03/20/guerra-in-iran/"
     write_manifest(output_dir, {article_url: str(existing_dir)})
     spoken: list[Path] = []
@@ -2689,7 +2692,14 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
     monkeypatch.setattr(cli, "_speak_paths", fake_speak_paths)
 
     result = cli._download_new_articles(
-        [Link(title="Che succede in Medio Oriente", url=article_url)],
+        [
+            Link(
+                title="Che succede in Medio Oriente",
+                url=article_url,
+                published_date="2026-03-20",
+                feed_number=22,
+            )
+        ],
         config=AppConfig(output_dir=tmp_path, verbose=True),
         output_dir=output_dir,
         create_audio=True,
@@ -2703,6 +2713,10 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
 
     assert result == 0
     assert spoken == [existing_dir]
+    metadata = json.loads((existing_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["feed"] == "La settimana di Domino"
+    assert metadata["published_date"] == "2026-03-20"
+    assert metadata["feed_number"] == 22
     assert speak_kwargs[0]["force"] is False
     assert "reused" in captured.out
     assert "pending" in captured.out
