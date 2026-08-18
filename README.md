@@ -580,6 +580,17 @@ and audio filenames, such as `1-...`, `20-...`, or `43-...`.
 Existing archives require a one-time maintenance rename before the first
 numbered sync.
 
+The date-first tree shown above documents magazine exports. Feed exports use
+the issue number as the first path component, for example:
+
+```text
+output_dir/library/la-settimana-di-domino/
+├── 1-2026-03-06-la-prima-settimana-di-conflitto-in-medio-oriente/
+│   ├── 1-2026-03-06-la-prima-settimana-di-conflitto-in-medio-oriente.txt
+│   └── 1-2026-03-06-la-prima-settimana-di-conflitto-in-medio-oriente.mp3
+└── 43-2026-08-07-ceuta-russia-e-sudafrica-india-vs-usa-italia-nella-pax-silica/
+```
+
 `sync-feed --audio` and `sync-magazine --audio` also inspect articles already
 present in the local manifest and generate missing audio from local exports.
 Use `--force` on sync commands only when you want to refetch/rewrite existing

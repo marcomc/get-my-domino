@@ -116,10 +116,17 @@ class WebClient:
     def discover_feed_articles(self, *, max_pages: int | None = 1) -> list[Link]:
         links: list[Link] = []
         seen: set[str] = set()
+        seen_page_urls: set[str] = set()
         page_url: str | None = self.config.feed_index_url
         pages_read = 0
+        pagination_complete = False
 
         while page_url and (max_pages is None or pages_read < max_pages):
+            normalized_page_url = normalize_url(page_url)
+            if normalized_page_url in seen_page_urls:
+                pagination_complete = True
+                break
+            seen_page_urls.add(normalized_page_url)
             html = self._get_text(page_url, authenticate=False)
             page_links = self._extract_feed_links(html, page_url=page_url)
             for link in page_links:
@@ -129,8 +136,10 @@ class WebClient:
                 links.append(link)
             page_url = self._next_page_url(html, page_url=page_url)
             pages_read += 1
+            if page_url is None:
+                pagination_complete = True
 
-        return _resolve_feed_numbers(links) if page_url is None and links else links
+        return _resolve_feed_numbers(links) if pagination_complete and links else links
 
     def _extract_feed_links(self, html: str, *, page_url: str) -> list[Link]:
         links = extract_links(
@@ -593,7 +602,13 @@ def _resolve_feed_numbers(links: list[Link]) -> list[Link]:
         key=lambda item: (item[1].published_date or "", item[1].url),
     )
     numbered = {index: rank for rank, (index, _link) in enumerate(ordered, start=1)}
-    return [replace(link, feed_number=numbered[index]) for index, link in enumerate(links)]
+    return [
+        replace(
+            link,
+            feed_number=(link.feed_number if link.feed_number is not None else numbered[index]),
+        )
+        for index, link in enumerate(links)
+    ]
 
 
 def discover_weekly_articles(config: AppConfig, *, max_pages: int | None = 1) -> list[Link]:

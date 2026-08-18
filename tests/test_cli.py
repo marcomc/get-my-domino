@@ -680,6 +680,50 @@ def test_feed_articles_assign_chronological_numbers_when_images_have_none() -> N
     assert [link.feed_number for link in links] == [2, 1]
 
 
+def test_feed_articles_preserve_known_numbers_when_some_images_are_missing() -> None:
+    first_page = "https://example.test/feed/"
+    session = FakeSession(
+        {
+            first_page: """
+            <article><img src="/uploads/Domino_IG_7-scaled.jpg">
+              <a href="/blog/2026/04/24/primo/">Primo</a>
+            </article>
+            <article>
+              <a href="/blog/2026/04/17/secondo/">Secondo</a>
+            </article>
+            <article><img src="/uploads/Domino_IG_1-scaled.jpg">
+              <a href="/blog/2026/04/10/terzo/">Terzo</a>
+            </article>
+            """
+        }
+    )
+    config = AppConfig(feed_index_url=first_page, feed_article_link_patterns=("/blog/20",))
+
+    links = WebClient(config, session=session).discover_feed_articles(max_pages=None)
+
+    assert [link.feed_number for link in links] == [7, 2, 1]
+
+
+def test_feed_articles_stop_when_pagination_repeats_a_page() -> None:
+    first_page = "https://example.test/feed/"
+    session = FakeSession(
+        {
+            first_page: """
+            <link rel="next" href="/feed/">
+            <article><img src="/uploads/Domino_IG_1-scaled.jpg">
+              <a href="/blog/2026/04/10/terzo/">Terzo</a>
+            </article>
+            """
+        }
+    )
+    config = AppConfig(feed_index_url=first_page, feed_article_link_patterns=("/blog/20",))
+
+    links = WebClient(config, session=session).discover_feed_articles(max_pages=None)
+
+    assert [link.title for link in links] == ["Terzo"]
+    assert session.gets == [first_page]
+
+
 def test_issue_articles_keep_month_groups_dates_and_order(tmp_path: Path) -> None:
     issue_url = "https://www.rivistadomino.it/prodotto/guaio-persiano/"
     session = FakeSession(
@@ -3999,6 +4043,54 @@ def test_codex_speech_normalizer_uses_backup_model_after_primary_failure(
     log_text = (tmp_path / "001-editoriale.speech.log").read_text(encoding="utf-8")
     assert "model: gpt-5.6-luna" in log_text
     assert "model: gpt-5.6-terra" in log_text
+
+
+def test_codex_speech_normalizer_tries_cli_default_before_backup_model(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del input, text, capture_output, timeout, check
+        commands.append(command)
+        if "-m" in command:
+            output.write_text("Titolo normalizzato", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="default unavailable")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    result = speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="",
+            backup_model="gpt-5.6-terra",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            prompt_path=None,
+            diff=False,
+        ),
+    )
+
+    assert result == output
+    assert len(commands) == 2
+    assert "-m" not in commands[0]
+    assert commands[1][commands[1].index("-m") + 1] == "gpt-5.6-terra"
 
 
 def test_speech_normalizer_rejects_unimplemented_agents(tmp_path: Path) -> None:

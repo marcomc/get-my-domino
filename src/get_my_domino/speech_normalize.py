@@ -184,11 +184,7 @@ def _run_codex_normalizer(
     )
     attempts: list[str] = []
     last_error: SpeechNormalizeError | None = None
-    models = list(
-        dict.fromkeys(model for model in (settings.model, settings.backup_model) if model)
-    )
-    if not models:
-        models = [""]
+    models = list(dict.fromkeys((settings.model, settings.backup_model)))
     total_attempts = len(models) * max_attempts
     attempt_number = 0
     for model in models:
