@@ -2746,7 +2746,7 @@ def _download_new_articles(
             if max_articles is not None and selected_count >= max_articles:
                 continue
         elif max_articles is not None and selected_count >= max_articles:
-            break
+            continue
         article_started_at = time.monotonic()
         article = client.download_article(article_link.url)
         article = replace(article, issue_title="La settimana di Domino")

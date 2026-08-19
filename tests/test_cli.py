@@ -2778,6 +2778,7 @@ def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
     first_dir.mkdir(parents=True)
     second_dir.mkdir(parents=True)
     first_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
+    unmanifested_url = "https://www.rivistadomino.it/blog/2026/03/17/new/"
     second_url = "https://www.rivistadomino.it/blog/2026/03/13/second/"
     write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
     for article_dir in (first_dir, second_dir):
@@ -2809,6 +2810,12 @@ def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
                 url=first_url,
                 published_date="2026-03-20",
                 feed_number=2,
+            ),
+            Link(
+                title="New",
+                url=unmanifested_url,
+                published_date="2026-03-17",
+                feed_number=3,
             ),
             Link(
                 title="Second",
@@ -2894,6 +2901,7 @@ def test_sync_feed_force_limited_refreshes_metadata_beyond_audio_limit(
     first_dir.mkdir(parents=True)
     second_dir.mkdir(parents=True)
     first_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
+    unmanifested_url = "https://www.rivistadomino.it/blog/2026/03/17/new/"
     second_url = "https://www.rivistadomino.it/blog/2026/03/13/second/"
     write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
     for article_dir in (first_dir, second_dir):
@@ -2918,6 +2926,7 @@ def test_sync_feed_force_limited_refreshes_metadata_beyond_audio_limit(
     result = cli._download_new_articles(
         [
             Link(title="First", url=first_url, published_date="2026-03-20", feed_number=2),
+            Link(title="New", url=unmanifested_url, published_date="2026-03-17", feed_number=3),
             Link(title="Second", url=second_url, published_date="2026-03-13", feed_number=1),
         ],
         config=AppConfig(output_dir=tmp_path),
