@@ -3089,6 +3089,39 @@ def test_outputs_command_uses_local_metadata_when_feed_refresh_fails(
     assert "using local feed metadata" in capsys.readouterr().out
 
 
+def test_outputs_command_uses_local_metadata_when_manifest_is_invalid(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "exports"
+    config = AppConfig(output_dir=output_dir)
+    feed_dir = cli._feed_output_dir(output_dir, config)
+    feed_dir.mkdir(parents=True)
+    (feed_dir / "manifest.json").write_text("{", encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_dir = "{output_dir}"',
+                f'podcast_output_dir = "{tmp_path / "podcasts"}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+    monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
+    monkeypatch.setattr(
+        cli,
+        "generate_podcast_outputs",
+        lambda *args, **kwargs: {"rss": 1, "index": None},
+    )
+
+    result = cli.main(["--config", str(config_path), "outputs", "--rss"])
+
+    assert result == 0
+    assert "using local feed metadata" in capsys.readouterr().out
+
+
 def test_sync_feed_bounded_podcast_refreshes_metadata_for_full_library(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
