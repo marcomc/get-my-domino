@@ -124,7 +124,6 @@ class WebClient:
         while page_url and (max_pages is None or pages_read < max_pages):
             normalized_page_url = normalize_url(page_url)
             if normalized_page_url in seen_page_urls:
-                pagination_complete = True
                 break
             seen_page_urls.add(normalized_page_url)
             html = self._get_text(page_url, authenticate=False)
@@ -601,14 +600,18 @@ def _resolve_feed_numbers(links: list[Link]) -> list[Link]:
         enumerate(links),
         key=lambda item: (item[1].published_date or "", item[1].url),
     )
-    numbered = {index: rank for rank, (index, _link) in enumerate(ordered, start=1)}
-    return [
-        replace(
-            link,
-            feed_number=(link.feed_number if link.feed_number is not None else numbered[index]),
-        )
-        for index, link in enumerate(links)
-    ]
+    used_numbers = {number for number in numbers if number is not None}
+    next_number = 1
+    resolved = list(links)
+    for index, link in ordered:
+        if link.feed_number is not None:
+            continue
+        while next_number in used_numbers:
+            next_number += 1
+        resolved[index] = replace(link, feed_number=next_number)
+        used_numbers.add(next_number)
+        next_number += 1
+    return resolved
 
 
 def discover_weekly_articles(config: AppConfig, *, max_pages: int | None = 1) -> list[Link]:

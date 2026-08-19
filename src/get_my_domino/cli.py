@@ -2723,8 +2723,6 @@ def _download_new_articles(
 
     _print_feed_sync_header(output_dir)
     for article_link in article_links:
-        if max_articles is not None and selected_count >= max_articles:
-            break
         existing_dir = _existing_article_dir(
             manifest,
             article_link.url,
@@ -2739,7 +2737,7 @@ def _download_new_articles(
                     "feed_number": article_link.feed_number,
                 },
             )
-            if create_audio:
+            if create_audio and (max_articles is None or selected_count < max_articles):
                 audio_dirs.append(existing_dir)
                 selected_count += 1
                 _print_download_result(
@@ -2751,6 +2749,8 @@ def _download_new_articles(
                     verbose=config.verbose,
                 )
             continue
+        if max_articles is not None and selected_count >= max_articles:
+            break
         article_started_at = time.monotonic()
         article = client.download_article(article_link.url)
         article = replace(article, issue_title="La settimana di Domino")

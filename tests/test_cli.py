@@ -710,7 +710,7 @@ def test_feed_articles_stop_when_pagination_repeats_a_page() -> None:
         {
             first_page: """
             <link rel="next" href="/feed/">
-            <article><img src="/uploads/Domino_IG_1-scaled.jpg">
+            <article>
               <a href="/blog/2026/04/10/terzo/">Terzo</a>
             </article>
             """
@@ -721,6 +721,7 @@ def test_feed_articles_stop_when_pagination_repeats_a_page() -> None:
     links = WebClient(config, session=session).discover_feed_articles(max_pages=None)
 
     assert [link.title for link in links] == ["Terzo"]
+    assert [link.feed_number for link in links] == [None]
     assert session.gets == [first_page]
 
 
@@ -2779,6 +2780,10 @@ def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
     first_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
     second_url = "https://www.rivistadomino.it/blog/2026/03/13/second/"
     write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    for article_dir in (first_dir, second_dir):
+        (article_dir / "metadata.json").write_text(
+            json.dumps({"title": article_dir.name}), encoding="utf-8"
+        )
     spoken: list[Path] = []
     speak_kwargs: list[dict[str, object]] = []
 
@@ -2799,8 +2804,18 @@ def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
 
     result = cli._download_new_articles(
         [
-            Link(title="First", url=first_url),
-            Link(title="Second", url=second_url),
+            Link(
+                title="First",
+                url=first_url,
+                published_date="2026-03-20",
+                feed_number=2,
+            ),
+            Link(
+                title="Second",
+                url=second_url,
+                published_date="2026-03-13",
+                feed_number=1,
+            ),
         ],
         config=AppConfig(output_dir=tmp_path),
         output_dir=output_dir,
@@ -2815,6 +2830,8 @@ def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
     assert result == 0
     assert spoken == [first_dir]
     assert speak_kwargs[0]["force"] is False
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert second_metadata["feed_number"] == 1
 
 
 def test_sync_feed_force_redownloads_and_forces_audio_regeneration(
@@ -4000,6 +4017,10 @@ def test_codex_speech_normalizer_uses_backup_model_after_primary_failure(
     source = tmp_path / "001-editoriale.txt"
     source.write_text("Titolo", encoding="utf-8")
     output = tmp_path / "001-editoriale.speech.txt"
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"title": "Titolo", "url": "https://example.test/article"}),
+        encoding="utf-8",
+    )
     commands: list[list[str]] = []
 
     def fake_run(
@@ -4037,12 +4058,63 @@ def test_codex_speech_normalizer_uses_backup_model_after_primary_failure(
     )
 
     assert result == output
-    assert len(commands) == 2
+    assert len(commands) == 4
     assert commands[0][commands[0].index("-m") + 1] == "gpt-5.6-luna"
-    assert commands[1][commands[1].index("-m") + 1] == "gpt-5.6-terra"
+    assert commands[3][commands[3].index("-m") + 1] == "gpt-5.6-terra"
     log_text = (tmp_path / "001-editoriale.speech.log").read_text(encoding="utf-8")
     assert "model: gpt-5.6-luna" in log_text
     assert "model: gpt-5.6-terra" in log_text
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    speech_metadata = metadata["speech_normalization"]
+    assert speech_metadata["normalizer_model"] == "gpt-5.6-terra"
+    assert speech_metadata["configured_model"] == "gpt-5.6-luna"
+
+
+def test_codex_speech_normalizer_uses_backup_when_primary_creates_no_output(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del input, text, capture_output, timeout, check
+        commands.append(command)
+        if "gpt-5.6-terra" in command:
+            output.write_text("Titolo normalizzato", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    result = speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="gpt-5.6-luna",
+            backup_model="gpt-5.6-terra",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            prompt_path=None,
+            diff=False,
+        ),
+    )
+
+    assert result == output
+    assert len(commands) == 4
+    assert all("gpt-5.6-luna" in command for command in commands[:3])
+    assert "gpt-5.6-terra" in commands[3]
 
 
 def test_codex_speech_normalizer_tries_cli_default_before_backup_model(
@@ -4088,9 +4160,9 @@ def test_codex_speech_normalizer_tries_cli_default_before_backup_model(
     )
 
     assert result == output
-    assert len(commands) == 2
+    assert len(commands) == 4
     assert "-m" not in commands[0]
-    assert commands[1][commands[1].index("-m") + 1] == "gpt-5.6-terra"
+    assert commands[3][commands[3].index("-m") + 1] == "gpt-5.6-terra"
 
 
 def test_speech_normalizer_rejects_unimplemented_agents(tmp_path: Path) -> None:
@@ -4215,6 +4287,8 @@ def test_codex_speech_normalizer_records_metadata_json(
     assert speech_metadata["prompt_path"] == str(prompt_path)
     assert speech_metadata["prompt_version"] == speech_normalize.SPEECH_PROMPT_VERSION
     assert speech_metadata["normalizer_command"] == "codex"
+    assert speech_metadata["normalizer_model"] == ""
+    assert speech_metadata["configured_model"] == ""
     assert speech_metadata["source_text_sha256"] == speech_normalize._sha256_text("Titolo\n")
     assert speech_metadata["prompt_sha256"] == speech_normalize._sha256_text(
         prompt_path.read_text(encoding="utf-8")

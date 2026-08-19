@@ -94,7 +94,7 @@ def normalize_speech_text(
 
     try:
         if settings.agent == "codex":
-            _run_codex_normalizer(
+            normalizer_model = _run_codex_normalizer(
                 source_text_path,
                 output_path,
                 normalized_text,
@@ -125,6 +125,7 @@ def normalize_speech_text(
         source_text_path,
         output_path,
         settings=settings,
+        normalizer_model=normalizer_model,
         prompt_info=prompt_info,
         source_text_sha256=source_text_sha256,
     )
@@ -151,7 +152,7 @@ def _can_reuse(
     return (
         metadata.get("normalizer_agent") == settings.agent
         and metadata.get("normalizer_command") == settings.command
-        and metadata.get("normalizer_model") == settings.model
+        and metadata.get("configured_model", metadata.get("normalizer_model", "")) == settings.model
         and metadata.get("normalizer_backup_model", "") == settings.backup_model
         and metadata.get("prompt_path") == prompt_info.path
         and metadata.get("prompt_version") == prompt_info.version
@@ -168,12 +169,10 @@ def _run_codex_normalizer(
     *,
     prompt_info: PromptTemplateInfo,
     source_text_sha256: str,
-) -> None:
+) -> str:
     # A configured backup is the recovery path for unavailable models. Avoid
     # spending the normal retry budget on a rejected primary before trying it.
-    max_attempts = (
-        1 if settings.fallback or settings.backup_model else CODEX_NORMALIZER_MAX_ATTEMPTS
-    )
+    max_attempts = 1 if settings.fallback else CODEX_NORMALIZER_MAX_ATTEMPTS
     command_path = shutil.which(settings.command) or settings.command
     log_path = speech_log_path(source_text_path)
     prompt = _codex_prompt(
@@ -250,9 +249,15 @@ def _run_codex_normalizer(
                     stderr=result.stderr,
                 )
             )
-            if result.returncode == 0:
+            if result.returncode == 0 and output_path.exists():
                 log_path.write_text("\n\n".join(attempts), encoding="utf-8")
-                return
+                return model
+            if result.returncode == 0:
+                last_error = SpeechNormalizeError(
+                    f"codex normalizer exited successfully using {model or 'default model'} "
+                    "but did not create the requested output"
+                )
+                continue
             last_error = SpeechNormalizeError(
                 "codex normalizer failed with exit code "
                 f"{result.returncode} using {model or 'default model'}"
@@ -400,6 +405,7 @@ def _write_speech_metadata(
     output_path: Path,
     *,
     settings: SpeechNormalizeSettings,
+    normalizer_model: str,
     prompt_info: PromptTemplateInfo,
     source_text_sha256: str,
 ) -> None:
@@ -412,7 +418,8 @@ def _write_speech_metadata(
             "speech_normalization": {
                 "normalizer_agent": settings.agent,
                 "normalizer_command": settings.command,
-                "normalizer_model": settings.model,
+                "normalizer_model": normalizer_model,
+                "configured_model": settings.model,
                 "normalizer_backup_model": settings.backup_model,
                 "prompt_path": prompt_info.path,
                 "prompt_sha256": prompt_info.sha256,
