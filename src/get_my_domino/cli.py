@@ -62,6 +62,7 @@ from .storage import (
     article_basename,
     article_text_path,
     missing_article_export_files,
+    read_article_metadata,
     read_manifest,
     update_article_metadata,
     write_article,
@@ -3180,7 +3181,10 @@ def _refresh_feed_article_metadata(article_dir: Path, article_link: Link) -> Non
 
 
 def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None:
-    manifest = read_manifest(output_dir)
+    manifest = {
+        **_manifest_from_article_metadata(output_dir),
+        **read_manifest(output_dir),
+    }
     for article_link in discover_feed_articles(config, max_pages=None):
         existing_dir = _existing_article_dir(
             manifest,
@@ -3189,6 +3193,22 @@ def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None
         )
         if existing_dir is not None:
             _refresh_feed_article_metadata(existing_dir, article_link)
+
+
+def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
+    if not output_dir.exists():
+        return {}
+    manifest: dict[str, str] = {}
+    for article_dir in output_dir.iterdir():
+        if not article_dir.is_dir():
+            continue
+        try:
+            url = read_article_metadata(article_dir).get("url")
+        except ValueError:
+            continue
+        if isinstance(url, str) and url.strip():
+            manifest[url] = str(article_dir)
+    return manifest
 
 
 def _handle_sync_feed(
