@@ -2728,28 +2728,24 @@ def _download_new_articles(
             article_link.url,
             output_dir=output_dir,
         )
-        if existing_dir is not None and not force:
-            update_article_metadata(
-                existing_dir,
-                {
-                    "feed": "La settimana di Domino",
-                    "published_date": article_link.published_date,
-                    "feed_number": article_link.feed_number,
-                },
-            )
-            if create_audio and (max_articles is None or selected_count < max_articles):
-                audio_dirs.append(existing_dir)
-                selected_count += 1
-                _print_download_result(
-                    article_link.title,
-                    export_status="reused",
-                    audio_status="pending",
-                    elapsed="00:00",
-                    target_dir=existing_dir,
-                    verbose=config.verbose,
-                )
-            continue
-        if max_articles is not None and selected_count >= max_articles:
+        if existing_dir is not None:
+            _refresh_feed_article_metadata(existing_dir, article_link)
+            if not force:
+                if create_audio and (max_articles is None or selected_count < max_articles):
+                    audio_dirs.append(existing_dir)
+                    selected_count += 1
+                    _print_download_result(
+                        article_link.title,
+                        export_status="reused",
+                        audio_status="pending",
+                        elapsed="00:00",
+                        target_dir=existing_dir,
+                        verbose=config.verbose,
+                    )
+                continue
+            if max_articles is not None and selected_count >= max_articles:
+                continue
+        elif max_articles is not None and selected_count >= max_articles:
             break
         article_started_at = time.monotonic()
         article = client.download_article(article_link.url)
@@ -3172,6 +3168,17 @@ def _feed_article_folder_name(link: Link) -> str:
     return name
 
 
+def _refresh_feed_article_metadata(article_dir: Path, article_link: Link) -> None:
+    update_article_metadata(
+        article_dir,
+        {
+            "feed": "La settimana di Domino",
+            "published_date": article_link.published_date,
+            "feed_number": article_link.feed_number,
+        },
+    )
+
+
 def _handle_sync_feed(
     config: AppConfig,
     *,
@@ -3214,6 +3221,17 @@ def _handle_sync_feed(
         force=force,
     )
     if podcast:
+        if pages is not None:
+            complete_links = discover_feed_articles(config, max_pages=None)
+            manifest = read_manifest(output_dir)
+            for article_link in complete_links:
+                existing_dir = _existing_article_dir(
+                    manifest,
+                    article_link.url,
+                    output_dir=output_dir,
+                )
+                if existing_dir is not None:
+                    _refresh_feed_article_metadata(existing_dir, article_link)
         _ensure_default_feed_collection_details(config)
         podcast_result = generate_podcast_outputs(
             config.library_dir,

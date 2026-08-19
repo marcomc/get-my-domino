@@ -2885,6 +2885,57 @@ def test_sync_feed_force_redownloads_and_forces_audio_regeneration(
     assert speak_kwargs[0]["force"] is True
 
 
+def test_sync_feed_force_limited_refreshes_metadata_beyond_audio_limit(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    first_dir = output_dir / "2026-03-20-first"
+    second_dir = output_dir / "2026-03-13-second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    first_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
+    second_url = "https://www.rivistadomino.it/blog/2026/03/13/second/"
+    write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    for article_dir in (first_dir, second_dir):
+        (article_dir / "metadata.json").write_text(
+            json.dumps({"title": article_dir.name}), encoding="utf-8"
+        )
+    downloaded: list[str] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            downloaded.append(url)
+            return Article(
+                title="First", url=url, html="<article>Updated</article>", text="Updated"
+            )
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_speak_paths", lambda paths, **kwargs: 0)
+
+    result = cli._download_new_articles(
+        [
+            Link(title="First", url=first_url, published_date="2026-03-20", feed_number=2),
+            Link(title="Second", url=second_url, published_date="2026-03-13", feed_number=1),
+        ],
+        config=AppConfig(output_dir=tmp_path),
+        output_dir=output_dir,
+        create_audio=True,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=1,
+        force=True,
+    )
+
+    assert result == 0
+    assert downloaded == [first_url]
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert second_metadata["feed_number"] == 1
+
+
 def test_outputs_command_regenerates_podcast_outputs(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
@@ -2940,6 +2991,61 @@ def test_outputs_command_regenerates_podcast_outputs(
     index = (podcast_dir / "index.html").read_text(encoding="utf-8")
     assert "https://podcasts.example.test/domino/la-settimana-di-domino/feed.xml" in index
     assert "pcast://podcasts.example.test" not in index
+
+
+def test_sync_feed_bounded_podcast_refreshes_metadata_for_full_library(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    config = AppConfig(output_dir=tmp_path, podcast_auto=False)
+    output_dir = cli._feed_output_dir(config.output_dir, config)
+    first_dir = output_dir / "2026-03-20-first"
+    second_dir = output_dir / "2026-03-13-second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    first_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
+    second_url = "https://www.rivistadomino.it/blog/2026/03/13/second/"
+    write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    for article_dir in (first_dir, second_dir):
+        (article_dir / "metadata.json").write_text(
+            json.dumps({"title": article_dir.name}), encoding="utf-8"
+        )
+    partial_links = [Link(title="First", url=first_url, published_date="2026-03-20", feed_number=2)]
+    complete_links = partial_links + [
+        Link(title="Second", url=second_url, published_date="2026-03-13", feed_number=1)
+    ]
+    discovery_calls = 0
+
+    def fake_discover_feed_articles(feed_config: AppConfig, *, max_pages: int | None) -> list[Link]:
+        del feed_config
+        nonlocal discovery_calls
+        discovery_calls += 1
+        return partial_links if max_pages == 1 else complete_links
+
+    monkeypatch.setattr(cli, "discover_feed_articles", fake_discover_feed_articles)
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+    monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
+    monkeypatch.setattr(
+        cli,
+        "generate_podcast_outputs",
+        lambda *args, **kwargs: {"rss": 1, "index": None},
+    )
+
+    result = cli._handle_sync_feed(
+        config,
+        create_audio=False,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+        pages=1,
+        podcast=True,
+        podcast_output_dir=tmp_path / "podcast",
+    )
+
+    assert result == 0
+    assert discovery_calls == 2
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert second_metadata["feed_number"] == 1
 
 
 def test_sync_feed_podcast_audio_format_overrides_default(
