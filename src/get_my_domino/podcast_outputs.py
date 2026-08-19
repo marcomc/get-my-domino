@@ -747,6 +747,9 @@ def _collection_episodes(collection_dir: Path, *, audio_format: str) -> list[Pod
         )
         published_at = _published_at(published_date, fallback_path=audio_path)
         title = _metadata_string(metadata, "title") or _title_from_slug(article_dir.name)
+        feed_number = _metadata_int(metadata, "feed_number")
+        if feed_number is not None:
+            title = f"#{feed_number} - {title}"
         guid = _metadata_string(metadata, "url") or f"{collection_dir.name}/{article_dir.name}"
         episodes.append(
             PodcastEpisode(
@@ -892,6 +895,17 @@ def _iter_article_dirs(collection_dir: Path) -> list[Path]:
 def _metadata_string(metadata: dict[str, object], key: str) -> str:
     value = metadata.get(key)
     return str(value).strip() if value is not None else ""
+
+
+def _metadata_int(metadata: dict[str, object], key: str) -> int | None:
+    value = metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _title_from_slug(slug: str) -> str:

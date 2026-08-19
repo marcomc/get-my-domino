@@ -164,6 +164,10 @@
       "type": "string",
       "default": ""
     },
+    "speech_normalize_backup_model": {
+      "type": "string",
+      "default": ""
+    },
     "speech_normalize_timeout": {
       "type": "number",
       "exclusiveMinimum": 0,

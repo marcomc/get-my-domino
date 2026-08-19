@@ -30,6 +30,7 @@ _PRICE_PATTERN = (
     rf"{_CURRENCY_PATTERN}\s*\d+(?:[.,]\d{{1,2}})?)"
 )
 _GENERIC_ISSUE_CTA_TITLES = frozenset({"acquista", "leggi tutto", "leggi", "sfoglia", "vedi"})
+_FEED_NUMBER_PATTERN = re.compile(r"domino[_-]ig[_-](?P<number>\d+)", re.IGNORECASE)
 
 
 class FetchError(RuntimeError):
@@ -112,20 +113,21 @@ class WebClient:
         response = self._request("GET", url)
         return response.content
 
-    def discover_feed_articles(self, *, max_pages: int = 1) -> list[Link]:
+    def discover_feed_articles(self, *, max_pages: int | None = 1) -> list[Link]:
         links: list[Link] = []
         seen: set[str] = set()
+        seen_page_urls: set[str] = set()
         page_url: str | None = self.config.feed_index_url
         pages_read = 0
+        pagination_complete = False
 
-        while page_url and pages_read < max_pages:
+        while page_url and (max_pages is None or pages_read < max_pages):
+            normalized_page_url = normalize_url(page_url)
+            if normalized_page_url in seen_page_urls:
+                break
+            seen_page_urls.add(normalized_page_url)
             html = self._get_text(page_url, authenticate=False)
-            page_links = extract_links(
-                html,
-                page_url=page_url,
-                include_patterns=self.config.feed_article_link_patterns,
-                skip_patterns=self.config.skip_link_patterns,
-            )
+            page_links = self._extract_feed_links(html, page_url=page_url)
             for link in page_links:
                 if link.url in seen:
                     continue
@@ -133,10 +135,44 @@ class WebClient:
                 links.append(link)
             page_url = self._next_page_url(html, page_url=page_url)
             pages_read += 1
+            if page_url is None:
+                pagination_complete = True
 
-        return links
+        return _resolve_feed_numbers(links) if pagination_complete and links else links
 
-    def discover_weekly_articles(self, *, max_pages: int = 1) -> list[Link]:
+    def _extract_feed_links(self, html: str, *, page_url: str) -> list[Link]:
+        links = extract_links(
+            html,
+            page_url=page_url,
+            include_patterns=self.config.feed_article_link_patterns,
+            skip_patterns=self.config.skip_link_patterns,
+        )
+        if not links:
+            return links
+
+        known_urls = {link.url for link in links}
+        numbers_by_url: dict[str, int] = {}
+        soup = BeautifulSoup(html, "html.parser")
+        for article in soup.find_all("article"):
+            if not isinstance(article, Tag):
+                continue
+            article_urls = {
+                normalize_url(urljoin(page_url, str(anchor.get("href", "")).strip()))
+                for anchor in article.find_all("a", href=True)
+                if isinstance(anchor, Tag)
+            }
+            article_urls.intersection_update(known_urls)
+            if not article_urls:
+                continue
+            feed_number = _feed_number_from_element(article)
+            if feed_number is None:
+                continue
+            for article_url in article_urls:
+                numbers_by_url[article_url] = feed_number
+
+        return [replace(link, feed_number=numbers_by_url.get(link.url)) for link in links]
+
+    def discover_weekly_articles(self, *, max_pages: int | None = 1) -> list[Link]:
         return self.discover_feed_articles(max_pages=max_pages)
 
     def download_article(self, article_url: str) -> Article:
@@ -246,8 +282,8 @@ class WebClient:
         for form in soup.find_all("form"):
             if not isinstance(form, Tag):
                 continue
-            if form.find(attrs={"name": self.config.auth_username_field}) and form.find(
-                attrs={"name": self.config.auth_password_field}
+            if form.find(None, attrs={"name": self.config.auth_username_field}) and form.find(
+                None, attrs={"name": self.config.auth_password_field}
             ):
                 return form
         raise FetchError(
@@ -536,9 +572,47 @@ def download_article(article_url: str, config: AppConfig) -> Article:
     return WebClient(config).download_article(article_url)
 
 
-def discover_feed_articles(config: AppConfig, *, max_pages: int = 1) -> list[Link]:
+def discover_feed_articles(config: AppConfig, *, max_pages: int | None = 1) -> list[Link]:
     return WebClient(config).discover_feed_articles(max_pages=max_pages)
 
 
-def discover_weekly_articles(config: AppConfig, *, max_pages: int = 1) -> list[Link]:
+def _feed_number_from_element(element: Tag) -> int | None:
+    for candidate in element.find_all(["img", "source"]):
+        if not isinstance(candidate, Tag):
+            continue
+        for attribute in ("src", "srcset", "data-src", "data-srcset", "data-lazy-src"):
+            value = candidate.get(attribute)
+            if not value:
+                continue
+            match = _FEED_NUMBER_PATTERN.search(str(value))
+            if match:
+                return int(match.group("number"))
+    return None
+
+
+def _resolve_feed_numbers(links: list[Link]) -> list[Link]:
+    numbers = {link.feed_number for link in links}
+    expected_numbers = set(range(1, len(links) + 1))
+    if numbers == expected_numbers:
+        return links
+
+    ordered = sorted(
+        enumerate(links),
+        key=lambda item: (item[1].published_date or "", item[1].url),
+    )
+    used_numbers = {number for number in numbers if number is not None}
+    next_number = 1
+    resolved = list(links)
+    for index, link in ordered:
+        if link.feed_number is not None:
+            continue
+        while next_number in used_numbers:
+            next_number += 1
+        resolved[index] = replace(link, feed_number=next_number)
+        used_numbers.add(next_number)
+        next_number += 1
+    return resolved
+
+
+def discover_weekly_articles(config: AppConfig, *, max_pages: int | None = 1) -> list[Link]:
     return discover_feed_articles(config, max_pages=max_pages)

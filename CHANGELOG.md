@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Output Metadata
+
+- `outputs --rss`, `outputs --index`, and `outputs --all` refresh existing
+  weekly-feed metadata before generation when Domino is available, while
+  preserving offline output regeneration when the feed or local manifest is
+  unavailable.
+
+## [0.3.0] - 2026-08-18 - Complete weekly-feed synchronization and speech fallback
+
+### Fixed
+
+- `sync-feed` now scans the complete `La settimana di Domino` archive by
+  default instead of only the newest archive page.
+- Weekly issue numbers are discovered from the `Domino_IG_N` archive artwork,
+  with chronological numbering as a fallback.
+- Newly synced weekly article directories and their HTML, text, speech, and
+  audio files use the weekly issue number.
+- Weekly issue number prefixes are not zero-padded, so numbering remains
+  unbounded (`1-...`, `20-...`, `1000-...`).
+- Generated podcast RSS episode titles and enclosure filenames include the
+  weekly issue number.
+- Speech normalization supports a primary and backup Codex model; it stops with
+  an actionable error when both are unavailable unless original-text fallback
+  is explicitly enabled.
+
 ## [0.2.0] - 2026-05-29 - Add RSS feed support for la-settimana-di-domino
 
 ### Podcast Outputs

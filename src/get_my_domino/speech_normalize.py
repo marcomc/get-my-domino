@@ -36,6 +36,7 @@ class SpeechNormalizeSettings:
     fallback: bool
     prompt_path: Path | None = None
     diff: bool = False
+    backup_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ def normalize_speech_text(
 
     try:
         if settings.agent == "codex":
-            _run_codex_normalizer(
+            normalizer_model = _run_codex_normalizer(
                 source_text_path,
                 output_path,
                 normalized_text,
@@ -117,13 +118,18 @@ def normalize_speech_text(
             raise
         raise SpeechNormalizeError(str(exc)) from exc
 
-    if not output_path.exists():
-        raise SpeechNormalizeError(f"Speech normalizer did not create: {output_path}")
+    if not _has_usable_output(output_path):
+        raise SpeechNormalizeError(f"Speech normalizer did not create usable output: {output_path}")
     _finalize_output(output_path)
+    if not _has_usable_output(output_path):
+        if output_path.exists():
+            output_path.unlink()
+        raise SpeechNormalizeError(f"Speech normalizer produced unusable output: {output_path}")
     _write_speech_metadata(
         source_text_path,
         output_path,
         settings=settings,
+        normalizer_model=normalizer_model,
         prompt_info=prompt_info,
         source_text_sha256=source_text_sha256,
     )
@@ -140,7 +146,7 @@ def _can_reuse(
     prompt_info: PromptTemplateInfo,
     source_text_sha256: str,
 ) -> bool:
-    if force or not output_path.exists():
+    if force or not _has_usable_output(output_path):
         return False
     if output_path.stat().st_mtime < source_text_path.stat().st_mtime:
         return False
@@ -150,7 +156,8 @@ def _can_reuse(
     return (
         metadata.get("normalizer_agent") == settings.agent
         and metadata.get("normalizer_command") == settings.command
-        and metadata.get("normalizer_model") == settings.model
+        and metadata.get("configured_model", metadata.get("normalizer_model", "")) == settings.model
+        and metadata.get("normalizer_backup_model", "") == settings.backup_model
         and metadata.get("prompt_path") == prompt_info.path
         and metadata.get("prompt_version") == prompt_info.version
         and metadata.get("prompt_sha256") == prompt_info.sha256
@@ -166,7 +173,9 @@ def _run_codex_normalizer(
     *,
     prompt_info: PromptTemplateInfo,
     source_text_sha256: str,
-) -> None:
+) -> str:
+    # A configured backup is the recovery path for unavailable models. Avoid
+    # spending the normal retry budget on a rejected primary before trying it.
     max_attempts = 1 if settings.fallback else CODEX_NORMALIZER_MAX_ATTEMPTS
     command_path = shutil.which(settings.command) or settings.command
     log_path = speech_log_path(source_text_path)
@@ -176,77 +185,95 @@ def _run_codex_normalizer(
         normalized_text=normalized_text,
         prompt_info=prompt_info,
     )
-    command = [
-        command_path,
-        "exec",
-        "--skip-git-repo-check",
-        "--cd",
-        str(source_text_path.parent),
-        "--sandbox",
-        "workspace-write",
-        "--output-last-message",
-        str(source_text_path.with_suffix(".speech.last-message.txt")),
-    ]
-    if settings.model:
-        command.extend(["-m", settings.model])
-    command.append("-")
-
     attempts: list[str] = []
     last_error: SpeechNormalizeError | None = None
-    for attempt in range(1, max_attempts + 1):
-        if output_path.exists():
-            output_path.unlink()
-        try:
-            result = subprocess.run(
-                command,
-                input=prompt,
-                text=True,
-                capture_output=True,
-                timeout=settings.timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
+    models = list(dict.fromkeys((settings.model, settings.backup_model)))
+    total_attempts = len(models) * max_attempts
+    attempt_number = 0
+    for model in models:
+        command = [
+            command_path,
+            "exec",
+            "--skip-git-repo-check",
+            "--cd",
+            str(source_text_path.parent),
+            "--sandbox",
+            "workspace-write",
+            "--output-last-message",
+            str(source_text_path.with_suffix(".speech.last-message.txt")),
+        ]
+        if model:
+            command.extend(["-m", model])
+        command.append("-")
+        for _attempt in range(1, max_attempts + 1):
+            attempt_number += 1
+            if output_path.exists():
+                output_path.unlink()
+            try:
+                result = subprocess.run(
+                    command,
+                    input=prompt,
+                    text=True,
+                    capture_output=True,
+                    timeout=settings.timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                attempts.append(
+                    _codex_attempt_log(
+                        command=command,
+                        source_text_hash=source_text_sha256,
+                        settings=settings,
+                        active_model=model,
+                        prompt_info=prompt_info,
+                        attempt=attempt_number,
+                        max_attempts=total_attempts,
+                        status=f"timeout after {settings.timeout:g} seconds",
+                        returncode=None,
+                        stdout=exc.stdout,
+                        stderr=exc.stderr,
+                    )
+                )
+                last_error = SpeechNormalizeError(
+                    f"codex normalizer timed out after {settings.timeout:g} seconds"
+                )
+                continue
             attempts.append(
                 _codex_attempt_log(
                     command=command,
                     source_text_hash=source_text_sha256,
                     settings=settings,
+                    active_model=model,
                     prompt_info=prompt_info,
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    status=f"timeout after {settings.timeout:g} seconds",
-                    returncode=None,
-                    stdout=exc.stdout,
-                    stderr=exc.stderr,
+                    attempt=attempt_number,
+                    max_attempts=total_attempts,
+                    status="completed",
+                    returncode=result.returncode,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
                 )
             )
+            if result.returncode == 0 and _has_usable_output(output_path):
+                log_path.write_text("\n\n".join(attempts), encoding="utf-8")
+                return model
+            if result.returncode == 0:
+                if output_path.exists():
+                    output_path.unlink()
+                last_error = SpeechNormalizeError(
+                    f"codex normalizer exited successfully using {model or 'default model'} "
+                    "but did not create usable output"
+                )
+                continue
             last_error = SpeechNormalizeError(
-                f"codex normalizer timed out after {settings.timeout:g} seconds"
+                "codex normalizer failed with exit code "
+                f"{result.returncode} using {model or 'default model'}"
             )
-            continue
-        attempts.append(
-            _codex_attempt_log(
-                command=command,
-                source_text_hash=source_text_sha256,
-                settings=settings,
-                prompt_info=prompt_info,
-                attempt=attempt,
-                max_attempts=max_attempts,
-                status="completed",
-                returncode=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr,
-            )
-        )
-        if result.returncode == 0:
-            log_path.write_text("\n\n".join(attempts), encoding="utf-8")
-            return
-        last_error = SpeechNormalizeError(
-            f"codex normalizer failed with exit code {result.returncode}"
-        )
     log_path.write_text("\n\n".join(attempts), encoding="utf-8")
     if last_error is not None:
-        raise last_error
+        raise SpeechNormalizeError(
+            f"{last_error}. No configured speech-normalization model is available; "
+            "choose another model or rerun with --no-speech-normalize."
+        ) from last_error
     raise SpeechNormalizeError("codex normalizer failed without returning a result")
 
 
@@ -255,6 +282,7 @@ def _codex_attempt_log(
     command: list[str],
     source_text_hash: str,
     settings: SpeechNormalizeSettings,
+    active_model: str,
     prompt_info: PromptTemplateInfo,
     attempt: int,
     max_attempts: int,
@@ -269,6 +297,8 @@ def _codex_attempt_log(
         [
             f"timestamp: {datetime.now(UTC).isoformat(timespec='seconds')}",
             f"agent: {settings.agent}",
+            f"model: {active_model or 'default'}",
+            f"backup_model: {settings.backup_model or 'none'}",
             f"attempt: {attempt}/{max_attempts}",
             f"status: {status}",
             f"command: {' '.join(command)}",
@@ -293,6 +323,13 @@ def _decode_subprocess_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _has_usable_output(output_path: Path) -> bool:
+    try:
+        return bool(output_path.read_text(encoding="utf-8").strip())
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _codex_prompt(
@@ -381,6 +418,7 @@ def _write_speech_metadata(
     output_path: Path,
     *,
     settings: SpeechNormalizeSettings,
+    normalizer_model: str,
     prompt_info: PromptTemplateInfo,
     source_text_sha256: str,
 ) -> None:
@@ -393,7 +431,9 @@ def _write_speech_metadata(
             "speech_normalization": {
                 "normalizer_agent": settings.agent,
                 "normalizer_command": settings.command,
-                "normalizer_model": settings.model,
+                "normalizer_model": normalizer_model,
+                "configured_model": settings.model,
+                "normalizer_backup_model": settings.backup_model,
                 "prompt_path": prompt_info.path,
                 "prompt_sha256": prompt_info.sha256,
                 "prompt_version": prompt_info.version,

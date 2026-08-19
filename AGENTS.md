@@ -42,12 +42,33 @@ Expected checks:
 - `markdownlint --config .markdownlint.json README.md CHANGELOG.md TODO.md AGENTS.md docs/*.md`
 - `shellcheck --enable=all scripts/*.sh`
 
+## Code Review Rules
+
+These are GitHub Codex Review guidelines, not a guaranteed or parseable YAML
+schema. When applicable, remediation-handoff findings must use these headings:
+`root_cause`, `invariant`, `affected_paths`, `required_analysis`,
+`recommended_fix`, `implementation_constraints`, `tests_required`, and
+`acceptance_criteria`.
+
+- State why the defect occurs, its root cause and invariant, all known affected
+  paths, one preferred fix, material constraints or trade-offs, exact regression
+  tests, and acceptance criteria.
+- Inspect repository-wide analogous call sites, alternate entry points, bypasses,
+  and bounded, early-return, and error paths. Consolidate confirmed sibling
+  manifestations and explicitly warn against local-only fixes.
+- Do not submit vague findings. Prioritize correctness, regressions, data loss,
+  security, concurrency, state consistency, API contracts, and missing tests;
+  leave style-only checks to CI.
+
 ## Documentation Rules
 
 - Keep `README.md` accurate for end users.
 - Keep `CHANGELOG.md` updated in `Unreleased` for user-visible changes.
 - Remove completed items from `TODO.md` when they ship.
 - Update config documentation when adding or changing config keys.
+- When reusing existing feed article directories, refresh feed-derived metadata
+  before regenerating RSS or podcast outputs so numbering and publication data
+  remain aligned with the discovered feed.
 
 ## Release Hygiene
 

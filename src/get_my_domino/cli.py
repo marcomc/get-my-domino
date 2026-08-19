@@ -62,7 +62,9 @@ from .storage import (
     article_basename,
     article_text_path,
     missing_article_export_files,
+    read_article_metadata,
     read_manifest,
+    update_article_metadata,
     write_article,
     write_article_export,
     write_article_metadata,
@@ -133,6 +135,7 @@ class SpeechNormalizeOptions:
     fallback: bool
     prompt_path: Path | None
     diff: bool = False
+    backup_model: str = ""
 
 
 def format_main_help() -> str:
@@ -357,8 +360,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync_feed_parser.add_argument(
         "--pages",
         type=int,
-        default=1,
-        help="Number of feed archive pages to scan. Defaults to 1.",
+        default=None,
+        help="Limit feed archive pages to scan. Defaults to the complete archive.",
     )
     sync_feed_parser.add_argument(
         "--podcast",
@@ -685,6 +688,10 @@ def _add_speech_normalize_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--speech-normalize-model",
         help="Model name passed to the selected speech normalization agent.",
+    )
+    parser.add_argument(
+        "--speech-normalize-backup-model",
+        help="Backup model used if the primary speech normalization model is unavailable.",
     )
     parser.add_argument(
         "--speech-normalize-timeout",
@@ -1015,6 +1022,10 @@ def _speech_normalize_options(
             getattr(args, "speech_normalize_command", None) or config.speech_normalize_command
         ),
         model=str(getattr(args, "speech_normalize_model", None) or config.speech_normalize_model),
+        backup_model=str(
+            getattr(args, "speech_normalize_backup_model", None)
+            or config.speech_normalize_backup_model
+        ),
         timeout=normalize_audio_timeout(
             config.speech_normalize_timeout if raw_timeout is None else raw_timeout
         ),
@@ -1033,6 +1044,7 @@ def _speech_settings(options: SpeechNormalizeOptions) -> SpeechNormalizeSettings
         agent=options.agent,
         command=options.command,
         model=options.model,
+        backup_model=options.backup_model,
         timeout=options.timeout,
         force=options.force,
         fallback=options.fallback,
@@ -1086,6 +1098,8 @@ def _print_links(links: list[Link], *, as_json: bool) -> int:
             print(f"     group: {link.group}")
         if link.published_date:
             print(f"     date: {link.published_date}")
+        if link.feed_number is not None:
+            print(f"     feed number: {link.feed_number}")
         print(f"     {link.url}")
     return 0
 
@@ -1364,6 +1378,7 @@ def _handle_info(config: AppConfig, config_path: Path, as_json: bool) -> int:
     print(f"speech_normalize_agent: {config.speech_normalize_agent}")
     print(f"speech_normalize_command: {config.speech_normalize_command}")
     print(f"speech_normalize_model: {config.speech_normalize_model}")
+    print(f"speech_normalize_backup_model: {config.speech_normalize_backup_model}")
     print(f"speech_normalize_timeout: {config.speech_normalize_timeout}")
     print(f"speech_normalize_force: {config.speech_normalize_force}")
     print(f"speech_normalize_fallback: {config.speech_normalize_fallback}")
@@ -1502,8 +1517,13 @@ def _download_articles(
             else None
         )
         article = _with_fallback_author(article, fallback_author=fallback_author)
-        if article.url in manifest:
-            target_dir = Path(manifest[article.url]).expanduser()
+        existing_dir = _existing_article_dir(
+            manifest,
+            article.url,
+            output_dir=output_dir,
+        )
+        if existing_dir is not None:
+            target_dir = existing_dir
             with _progress_step(f"Writing files in {target_dir.name}"):
                 write_article_export(
                     target_dir,
@@ -1739,19 +1759,16 @@ def _existing_article_dir(
     *,
     output_dir: Path,
 ) -> Path | None:
-    if article_url in manifest:
+    canonical_url = article_url.rstrip("/")
+    for candidate_url in (article_url, canonical_url, f"{canonical_url}/"):
+        if candidate_url not in manifest:
+            continue
         path = _remap_legacy_manifest_dir(
-            Path(manifest[article_url]).expanduser(),
+            Path(manifest[candidate_url]).expanduser(),
             output_dir=output_dir,
         )
-        return path if path.exists() else None
-    normalized_url = article_url.rstrip("/")
-    if normalized_url in manifest:
-        path = _remap_legacy_manifest_dir(
-            Path(manifest[normalized_url]).expanduser(),
-            output_dir=output_dir,
-        )
-        return path if path.exists() else None
+        if _manifest_target_is_active_directory(str(path), output_dir):
+            return path
     return None
 
 
@@ -2701,7 +2718,7 @@ def _download_new_articles(
     force: bool = False,
 ) -> int:
     client = WebClient(config)
-    manifest = read_manifest(output_dir)
+    manifest = _feed_manifest_with_metadata_fallback(output_dir)
     next_index = len(manifest) + 1
     downloaded_dirs: list[Path] = []
     audio_dirs: list[Path] = []
@@ -2709,25 +2726,32 @@ def _download_new_articles(
 
     _print_feed_sync_header(output_dir)
     for article_link in article_links:
-        if max_articles is not None and selected_count >= max_articles:
-            break
         existing_dir = _existing_article_dir(
             manifest,
             article_link.url,
             output_dir=output_dir,
         )
-        if existing_dir is not None and not force:
-            if create_audio:
-                audio_dirs.append(existing_dir)
-                selected_count += 1
-                _print_download_result(
-                    article_link.title,
-                    export_status="reused",
-                    audio_status="pending",
-                    elapsed="00:00",
-                    target_dir=existing_dir,
-                    verbose=config.verbose,
-                )
+        if existing_dir is not None:
+            try:
+                _refresh_feed_article_metadata(existing_dir, article_link)
+            except (OSError, ValueError):
+                pass
+            if not force:
+                if create_audio and (max_articles is None or selected_count < max_articles):
+                    audio_dirs.append(existing_dir)
+                    selected_count += 1
+                    _print_download_result(
+                        article_link.title,
+                        export_status="reused",
+                        audio_status="pending",
+                        elapsed="00:00",
+                        target_dir=existing_dir,
+                        verbose=config.verbose,
+                    )
+                continue
+            if max_articles is not None and selected_count >= max_articles:
+                continue
+        elif max_articles is not None and selected_count >= max_articles:
             continue
         article_started_at = time.monotonic()
         article = client.download_article(article_link.url)
@@ -2741,6 +2765,7 @@ def _download_new_articles(
                 metadata={
                     "feed": "La settimana di Domino",
                     "published_date": article_link.published_date,
+                    "feed_number": article_link.feed_number,
                 },
             )
         else:
@@ -2752,6 +2777,7 @@ def _download_new_articles(
                 metadata={
                     "feed": "La settimana di Domino",
                     "published_date": article_link.published_date,
+                    "feed_number": article_link.feed_number,
                 },
             )
         manifest[article.url] = str(target_dir)
@@ -3142,7 +3168,135 @@ def _article_folder_name(link: Link, *, fallback_index: int) -> str:
 
 def _feed_article_folder_name(link: Link) -> str:
     date = link.published_date or article_date_from_url(link.url) or "unknown-date"
-    return f"{date}-{slugify(link.title, fallback='articolo')}"
+    name = f"{date}-{slugify(link.title, fallback='articolo')}"
+    if link.feed_number is not None:
+        return f"{link.feed_number}-{name}"
+    return name
+
+
+def _refresh_feed_article_metadata(article_dir: Path, article_link: Link) -> None:
+    update_article_metadata(
+        article_dir,
+        {
+            "feed": "La settimana di Domino",
+            "published_date": article_link.published_date,
+            "feed_number": article_link.feed_number,
+        },
+    )
+
+
+def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None:
+    manifest = _feed_manifest_with_metadata_fallback(output_dir)
+    if not manifest:
+        return
+    for article_link in discover_feed_articles(config, max_pages=None):
+        existing_dir = _existing_article_dir(
+            manifest,
+            article_link.url,
+            output_dir=output_dir,
+        )
+        if existing_dir is not None:
+            try:
+                _refresh_feed_article_metadata(existing_dir, article_link)
+            except (OSError, ValueError):
+                continue
+
+
+def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
+    if not output_dir.exists():
+        return {}
+    manifest: dict[str, str] = {}
+    for article_dir in output_dir.iterdir():
+        if not article_dir.is_dir():
+            continue
+        try:
+            url = read_article_metadata(article_dir).get("url")
+        except (OSError, ValueError):
+            continue
+        if isinstance(url, str) and url.strip():
+            manifest[url] = str(article_dir)
+    return manifest
+
+
+def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
+    try:
+        manifest = read_manifest(output_dir)
+    except ValueError:
+        manifest = {}
+    for url in list(manifest):
+        canonical_url = url.rstrip("/")
+        aliases = (canonical_url, f"{canonical_url}/")
+        active_manifest_values = [
+            manifest[candidate]
+            for candidate in aliases
+            if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+        ]
+        active_manifest_value = next(
+            (
+                candidate
+                for candidate in active_manifest_values
+                if _manifest_target_matches_article_url(
+                    candidate,
+                    canonical_url,
+                    output_dir=output_dir,
+                )
+            ),
+            None,
+        )
+        if active_manifest_value is None:
+            if active_manifest_values:
+                for candidate in aliases:
+                    manifest.pop(candidate, None)
+            continue
+        for candidate in aliases:
+            manifest.pop(candidate, None)
+        manifest[canonical_url] = active_manifest_value
+    for url, article_dir in _manifest_from_article_metadata(output_dir).items():
+        canonical_url = url.rstrip("/")
+        aliases = (canonical_url, f"{canonical_url}/")
+        active_manifest_value = next(
+            (
+                manifest[candidate]
+                for candidate in aliases
+                if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+                and _manifest_target_matches_article_url(
+                    manifest[candidate],
+                    canonical_url,
+                    output_dir=output_dir,
+                )
+            ),
+            None,
+        )
+        for candidate in aliases:
+            manifest.pop(candidate, None)
+        manifest[canonical_url] = active_manifest_value or article_dir
+    return manifest
+
+
+def _manifest_target_is_active_directory(path_value: str | None, output_dir: Path) -> bool:
+    if not path_value:
+        return False
+    path = _remap_legacy_manifest_dir(Path(path_value).expanduser(), output_dir=output_dir)
+    try:
+        return path.is_dir() and path.resolve().is_relative_to(output_dir.resolve())
+    except OSError:
+        return False
+
+
+def _manifest_target_matches_article_url(
+    path_value: str,
+    article_url: str,
+    *,
+    output_dir: Path,
+) -> bool:
+    path = _remap_legacy_manifest_dir(Path(path_value).expanduser(), output_dir=output_dir)
+    try:
+        metadata_url = read_article_metadata(path).get("url")
+    except (OSError, ValueError):
+        return True
+    if not isinstance(metadata_url, str) or not metadata_url.strip():
+        return True
+    return metadata_url.rstrip("/") == article_url.rstrip("/")
 
 
 def _handle_sync_feed(
@@ -3159,7 +3313,7 @@ def _handle_sync_feed(
     speech_options: SpeechNormalizeOptions | None = None,
     export_formats: tuple[str, ...],
     max_articles: int | None,
-    pages: int,
+    pages: int | None,
     force: bool = False,
     podcast: bool = False,
     podcast_base_url: str = "",
@@ -3168,10 +3322,11 @@ def _handle_sync_feed(
     podcast_apple_podcasts: bool = True,
 ) -> int:
     links = discover_feed_articles(config, max_pages=pages)
+    output_dir = _feed_output_dir(config.output_dir, config)
     result = _download_new_articles(
         links,
         config=config,
-        output_dir=_feed_output_dir(config.output_dir, config),
+        output_dir=output_dir,
         create_audio=create_audio,
         audio_format=audio_format,
         audio_timeout=audio_timeout,
@@ -3186,6 +3341,8 @@ def _handle_sync_feed(
         force=force,
     )
     if podcast:
+        if pages is not None:
+            _refresh_existing_feed_metadata(config, output_dir)
         _ensure_default_feed_collection_details(config)
         podcast_result = generate_podcast_outputs(
             config.library_dir,
@@ -3723,7 +3880,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 speech_options=speech_options,
                 export_formats=export_formats,
                 max_articles=args.max_articles,
-                pages=int(args.pages),
+                pages=None if args.pages is None else int(args.pages),
                 force=bool(args.force),
                 podcast=podcast_enabled,
                 podcast_base_url=_podcast_base_url(args, config),
@@ -3737,6 +3894,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             index = bool(args.index or args.all)
             if not rss and not index:
                 raise ValueError("outputs requires at least one of --rss, --index, or --all.")
+            output_dir = _feed_output_dir(config.output_dir, config)
+            try:
+                _refresh_existing_feed_metadata(config, output_dir)
+            except (FetchError, OSError, ValueError) as exc:
+                print(f"warning: using local feed metadata because refresh failed: {exc}")
             _ensure_default_feed_collection_details(config)
             result = generate_podcast_outputs(
                 config.library_dir,
