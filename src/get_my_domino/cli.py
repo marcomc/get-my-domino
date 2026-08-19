@@ -3226,15 +3226,27 @@ def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
     for url in list(manifest):
         canonical_url = url.rstrip("/")
         aliases = (canonical_url, f"{canonical_url}/")
+        active_manifest_values = [
+            manifest[candidate]
+            for candidate in aliases
+            if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+        ]
         active_manifest_value = next(
             (
-                manifest[candidate]
-                for candidate in aliases
-                if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+                candidate
+                for candidate in active_manifest_values
+                if _manifest_target_matches_article_url(
+                    candidate,
+                    canonical_url,
+                    output_dir=output_dir,
+                )
             ),
             None,
         )
         if active_manifest_value is None:
+            if active_manifest_values:
+                for candidate in aliases:
+                    manifest.pop(candidate, None)
             continue
         for candidate in aliases:
             manifest.pop(candidate, None)
@@ -3247,6 +3259,11 @@ def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
                 manifest[candidate]
                 for candidate in aliases
                 if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+                and _manifest_target_matches_article_url(
+                    manifest[candidate],
+                    canonical_url,
+                    output_dir=output_dir,
+                )
             ),
             None,
         )
@@ -3264,6 +3281,22 @@ def _manifest_target_is_active_directory(path_value: str | None, output_dir: Pat
         return path.is_dir() and path.resolve().is_relative_to(output_dir.resolve())
     except OSError:
         return False
+
+
+def _manifest_target_matches_article_url(
+    path_value: str,
+    article_url: str,
+    *,
+    output_dir: Path,
+) -> bool:
+    path = _remap_legacy_manifest_dir(Path(path_value).expanduser(), output_dir=output_dir)
+    try:
+        metadata_url = read_article_metadata(path).get("url")
+    except (OSError, ValueError):
+        return True
+    if not isinstance(metadata_url, str) or not metadata_url.strip():
+        return True
+    return metadata_url.rstrip("/") == article_url.rstrip("/")
 
 
 def _handle_sync_feed(
@@ -3864,7 +3897,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_dir = _feed_output_dir(config.output_dir, config)
             try:
                 _refresh_existing_feed_metadata(config, output_dir)
-            except (FetchError, ValueError) as exc:
+            except (FetchError, OSError, ValueError) as exc:
                 print(f"warning: using local feed metadata because refresh failed: {exc}")
             _ensure_default_feed_collection_details(config)
             result = generate_podcast_outputs(

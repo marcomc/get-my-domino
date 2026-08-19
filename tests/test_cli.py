@@ -3346,6 +3346,41 @@ def test_outputs_command_uses_local_metadata_when_feed_refresh_fails(
     assert "using local feed metadata" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("command", [("--rss",), ("--index",), ("--all",)])
+@pytest.mark.parametrize("error_type", [PermissionError, OSError])
+def test_outputs_command_uses_local_metadata_when_manifest_read_fails(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+    command: tuple[str, ...],
+    error_type: type[OSError],
+) -> None:
+    output_dir = tmp_path / "exports"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'output_dir = "{output_dir}"\npodcast_output_dir = "{tmp_path / "podcasts"}"\n',
+        encoding="utf-8",
+    )
+    generated: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "get_my_domino.cli.read_manifest",
+        lambda output_dir: (_ for _ in ()).throw(error_type("manifest unavailable")),
+    )
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+    monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
+
+    def fake_generate_podcast_outputs(*args: object, **kwargs: object) -> dict[str, object]:
+        del args
+        generated.append(kwargs)
+        return {"rss": 1, "index": None}
+
+    monkeypatch.setattr(cli, "generate_podcast_outputs", fake_generate_podcast_outputs)
+
+    assert cli.main(["--config", str(config_path), "outputs", *command]) == 0
+    assert generated
+    assert "using local feed metadata because refresh failed" in capsys.readouterr().out
+
+
 def test_outputs_command_skips_feed_discovery_without_local_articles(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
@@ -3619,6 +3654,153 @@ def test_feed_manifest_keeps_valid_active_path_over_duplicate_metadata(tmp_path:
         cli._existing_article_dir(manifest, article_url.rstrip("/"), output_dir=output_dir)
         == manifest_dir
     )
+
+
+@pytest.mark.parametrize("metadata_has_trailing_slash", [False, True])
+def test_feed_manifest_rejects_readable_cross_article_mapping(
+    tmp_path: Path, monkeypatch: MonkeyPatch, metadata_has_trailing_slash: bool
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    first_dir = output_dir / "first"
+    second_dir = output_dir / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    first_url = "https://example.test/first/"
+    second_url = "https://example.test/second/"
+    first_metadata_url = first_url if metadata_has_trailing_slash else first_url.rstrip("/")
+    second_metadata_url = second_url if metadata_has_trailing_slash else second_url.rstrip("/")
+    (first_dir / "metadata.json").write_text(
+        json.dumps({"url": first_metadata_url}), encoding="utf-8"
+    )
+    (second_dir / "metadata.json").write_text(
+        json.dumps({"url": second_metadata_url}), encoding="utf-8"
+    )
+    write_manifest(output_dir, {first_url.rstrip("/"): str(second_dir)})
+    monkeypatch.setattr(
+        cli,
+        "discover_feed_articles",
+        lambda config, *, max_pages: [
+            Link(title="First", url=first_url, feed_number=1),
+            Link(title="Second", url=second_url, feed_number=2),
+        ],
+    )
+
+    manifest = cli._feed_manifest_with_metadata_fallback(output_dir)
+    cli._refresh_existing_feed_metadata(AppConfig(output_dir=tmp_path), output_dir)
+
+    assert cli._existing_article_dir(manifest, first_url, output_dir=output_dir) == first_dir
+    assert cli._existing_article_dir(manifest, second_url, output_dir=output_dir) == second_dir
+    first_metadata = json.loads((first_dir / "metadata.json").read_text(encoding="utf-8"))
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert first_metadata["feed_number"] == 1
+    assert second_metadata["feed_number"] == 2
+
+
+def test_sync_feed_rejects_readable_cross_article_mapping(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    first_dir = output_dir / "first"
+    second_dir = output_dir / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    first_url = "https://example.test/first/"
+    second_url = "https://example.test/second/"
+    for article_dir, article_url in ((first_dir, first_url), (second_dir, second_url)):
+        (article_dir / "metadata.json").write_text(
+            json.dumps({"url": article_url}), encoding="utf-8"
+        )
+    write_manifest(output_dir, {first_url: str(second_dir)})
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            raise AssertionError(f"should not download reusable article: {url}")
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+
+    assert (
+        cli._download_new_articles(
+            [
+                Link(title="First", url=first_url, feed_number=1),
+                Link(title="Second", url=second_url, feed_number=2),
+            ],
+            config=AppConfig(output_dir=tmp_path),
+            output_dir=output_dir,
+            create_audio=False,
+            audio_format="m4a",
+            audio_timeout=900.0,
+            export_formats=("txt",),
+            max_articles=None,
+        )
+        == 0
+    )
+    first_metadata = json.loads((first_dir / "metadata.json").read_text(encoding="utf-8"))
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert first_metadata["feed_number"] == 1
+    assert second_metadata["feed_number"] == 2
+
+
+def test_bounded_feed_podcast_rejects_readable_cross_article_mapping(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    config = AppConfig(output_dir=tmp_path, podcast_auto=False)
+    output_dir = cli._feed_output_dir(config.output_dir, config)
+    first_dir = output_dir / "first"
+    second_dir = output_dir / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    first_url = "https://example.test/first/"
+    second_url = "https://example.test/second/"
+    for article_dir, article_url in ((first_dir, first_url), (second_dir, second_url)):
+        (article_dir / "metadata.json").write_text(
+            json.dumps({"url": article_url}), encoding="utf-8"
+        )
+    write_manifest(output_dir, {first_url: str(second_dir)})
+    partial_links = [Link(title="First", url=first_url, feed_number=1)]
+    full_links = partial_links + [Link(title="Second", url=second_url, feed_number=2)]
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            raise AssertionError(f"should not download reusable article: {url}")
+
+    monkeypatch.setattr(
+        cli,
+        "discover_feed_articles",
+        lambda feed_config, *, max_pages: partial_links if max_pages == 1 else full_links,
+    )
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+    monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
+    monkeypatch.setattr(
+        cli,
+        "generate_podcast_outputs",
+        lambda *args, **kwargs: {"rss": 1, "index": None},
+    )
+
+    assert (
+        cli._handle_sync_feed(
+            config,
+            create_audio=False,
+            audio_format="m4a",
+            audio_timeout=900.0,
+            export_formats=("txt",),
+            max_articles=None,
+            pages=1,
+            podcast=True,
+            podcast_output_dir=tmp_path / "podcast",
+        )
+        == 0
+    )
+    first_metadata = json.loads((first_dir / "metadata.json").read_text(encoding="utf-8"))
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert first_metadata["feed_number"] == 1
+    assert second_metadata["feed_number"] == 2
 
 
 @pytest.mark.parametrize("active_has_trailing_slash", [False, True])
