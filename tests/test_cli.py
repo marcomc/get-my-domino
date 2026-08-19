@@ -2780,7 +2780,9 @@ def test_sync_feed_reuses_article_when_manifest_path_is_stale(
         json.dumps({"title": "Che succede in Medio Oriente", "url": article_url}),
         encoding="utf-8",
     )
-    write_manifest(output_dir, {article_url: str(tmp_path / "former-library" / "article")})
+    former_dir = tmp_path / "former-library" / "article"
+    former_dir.mkdir(parents=True)
+    write_manifest(output_dir, {article_url: str(former_dir)})
 
     class FakeWebClient:
         def __init__(self, config: AppConfig) -> None:
@@ -3228,7 +3230,13 @@ def test_outputs_command_refreshes_metadata_when_manifest_path_is_stale(
     article_dir = feed_dir / "2026-04-24-usa-e-globalizzazione"
     article_dir.mkdir(parents=True)
     article_url = "https://www.rivistadomino.it/blog/2026/04/24/usa-e-globalizzazione/"
-    write_manifest(feed_dir, {article_url: str(tmp_path / "former-library" / "article")})
+    former_dir = tmp_path / "former-library" / "article"
+    former_dir.mkdir(parents=True)
+    (former_dir / "metadata.json").write_text(
+        json.dumps({"title": "Original archive article", "url": article_url}),
+        encoding="utf-8",
+    )
+    write_manifest(feed_dir, {article_url: str(former_dir)})
     (article_dir / "metadata.json").write_text(
         json.dumps({"title": "USA e globalizzazione", "url": article_url}),
         encoding="utf-8",
@@ -3269,6 +3277,8 @@ def test_outputs_command_refreshes_metadata_when_manifest_path_is_stale(
     assert result == 0
     metadata = json.loads((article_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["feed_number"] == 15
+    former_metadata = json.loads((former_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert "feed_number" not in former_metadata
 
 
 def test_sync_feed_bounded_podcast_refreshes_metadata_for_full_library(

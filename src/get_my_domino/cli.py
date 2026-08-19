@@ -3206,9 +3206,7 @@ def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
 
 def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
     manifest = read_manifest(output_dir)
-    for article_url, article_dir in _manifest_from_article_metadata(output_dir).items():
-        if _existing_article_dir(manifest, article_url, output_dir=output_dir) is None:
-            manifest[article_url] = article_dir
+    manifest.update(_manifest_from_article_metadata(output_dir))
     return manifest
 
 
