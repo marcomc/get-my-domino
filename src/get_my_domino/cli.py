@@ -3787,7 +3787,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not rss and not index:
                 raise ValueError("outputs requires at least one of --rss, --index, or --all.")
             output_dir = _feed_output_dir(config.output_dir, config)
-            _refresh_existing_feed_metadata(config, output_dir)
+            try:
+                _refresh_existing_feed_metadata(config, output_dir)
+            except FetchError as exc:
+                print(f"warning: using local feed metadata because refresh failed: {exc}")
             _ensure_default_feed_collection_details(config)
             result = generate_podcast_outputs(
                 config.library_dir,

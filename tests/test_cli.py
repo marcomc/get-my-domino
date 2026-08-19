@@ -32,7 +32,7 @@ from get_my_domino.storage import (
     write_article,
     write_manifest,
 )
-from get_my_domino.web import WebClient
+from get_my_domino.web import FetchError, WebClient
 
 
 @pytest.fixture(autouse=True)
@@ -3053,6 +3053,40 @@ def test_outputs_command_refreshes_existing_feed_metadata(
     metadata = json.loads((article_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["feed_number"] == 15
     assert metadata["published_date"] == "2026-04-24"
+
+
+def test_outputs_command_uses_local_metadata_when_feed_refresh_fails(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "exports"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_dir = "{output_dir}"',
+                f'podcast_output_dir = "{tmp_path / "podcasts"}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "discover_feed_articles",
+        lambda feed_config, *, max_pages: (_ for _ in ()).throw(FetchError("offline")),
+    )
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+    monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
+    monkeypatch.setattr(
+        cli,
+        "generate_podcast_outputs",
+        lambda *args, **kwargs: {"rss": 1, "index": None},
+    )
+
+    result = cli.main(["--config", str(config_path), "outputs", "--rss"])
+
+    assert result == 0
+    assert "using local feed metadata" in capsys.readouterr().out
 
 
 def test_sync_feed_bounded_podcast_refreshes_metadata_for_full_library(
