@@ -3205,7 +3205,10 @@ def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
 
 
 def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
-    manifest = read_manifest(output_dir)
+    try:
+        manifest = read_manifest(output_dir)
+    except ValueError:
+        manifest = {}
     manifest.update(_manifest_from_article_metadata(output_dir))
     return manifest
 
