@@ -28,7 +28,9 @@ from get_my_domino.models import Article, Issue, Link
 from get_my_domino.session_store import load_cookies, save_cookies
 from get_my_domino.storage import (
     article_text_document,
+    read_article_metadata,
     read_manifest,
+    update_article_metadata,
     write_article,
     write_manifest,
 )
@@ -1904,6 +1906,44 @@ def test_existing_article_dir_ignores_unusable_manifest_path(
     assert resolved is None
 
 
+def test_explicit_download_does_not_write_to_rejected_external_manifest_target(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    former_dir = tmp_path / "former-library" / "article"
+    former_dir.mkdir(parents=True)
+    (former_dir / "sentinel.txt").write_text("unchanged", encoding="utf-8")
+    article_url = "https://example.test/article"
+    write_manifest(output_dir, {article_url: str(former_dir)})
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            return Article(
+                title="Article", url=url, html="<article>Updated</article>", text="Updated"
+            )
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+
+    assert (
+        cli._download_articles(
+            [article_url],
+            AppConfig(output_dir=output_dir),
+            output_dir,
+            create_audio=False,
+            audio_format="m4a",
+            audio_timeout=900.0,
+        )
+        == 0
+    )
+    target_dir = Path(read_manifest(output_dir)[article_url])
+    assert target_dir.resolve().is_relative_to(output_dir.resolve())
+    assert (former_dir / "sentinel.txt").read_text(encoding="utf-8") == "unchanged"
+    assert not (former_dir / "article.txt").exists()
+
+
 def test_download_issue_all_rejects_ambiguous_selectors(capsys: CaptureFixture[str]) -> None:
     result = cli.main(["download", "--issue", "2026-04", "--article", "1", "--all"])
 
@@ -3036,6 +3076,59 @@ def test_sync_feed_force_redownloads_and_forces_audio_regeneration(
     assert speak_kwargs[0]["force"] is True
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_sync_feed_keeps_requested_work_after_metadata_io_error(
+    tmp_path: Path, monkeypatch: MonkeyPatch, force: bool
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    existing_dir = output_dir / "2026-03-20-first"
+    existing_dir.mkdir(parents=True)
+    article_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
+    write_manifest(output_dir, {article_url: str(existing_dir)})
+    downloaded: list[str] = []
+    spoken: list[Path] = []
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            downloaded.append(url)
+            return Article(
+                title="First", url=url, html="<article>Updated</article>", text="Updated"
+            )
+
+    def fail_refresh(article_dir: Path, article_link: Link) -> None:
+        del article_dir, article_link
+        raise PermissionError("metadata sidecar is unwritable")
+
+    def fake_speak_paths(paths: list[Path], **kwargs: object) -> int:
+        del kwargs
+        spoken.extend(paths)
+        return 0
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+    monkeypatch.setattr(cli, "_refresh_feed_article_metadata", fail_refresh)
+    monkeypatch.setattr(cli, "_speak_paths", fake_speak_paths)
+
+    assert (
+        cli._download_new_articles(
+            [Link(title="First", url=article_url)],
+            config=AppConfig(output_dir=tmp_path),
+            output_dir=output_dir,
+            create_audio=True,
+            audio_format="m4a",
+            audio_timeout=900.0,
+            export_formats=("txt",),
+            max_articles=None,
+            force=force,
+        )
+        == 0
+    )
+    assert downloaded == ([article_url] if force else [])
+    assert spoken == [existing_dir]
+
+
 def test_sync_feed_force_limited_refreshes_metadata_beyond_audio_limit(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -3281,6 +3374,29 @@ def test_outputs_command_skips_feed_discovery_without_local_articles(
     assert "using local feed metadata" not in capsys.readouterr().out
 
 
+def test_outputs_command_reports_podcast_generation_io_error(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "exports"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'output_dir = "{output_dir}"\npodcast_output_dir = "{tmp_path / "podcasts"}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+
+    def fail_generate_podcast_outputs(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        raise OSError("podcast output is unavailable")
+
+    monkeypatch.setattr(cli, "generate_podcast_outputs", fail_generate_podcast_outputs)
+
+    assert cli.main(["--config", str(config_path), "outputs", "--rss"]) == 1
+    captured = capsys.readouterr()
+    assert "error: podcast output is unavailable" in captured.err
+    assert "using local feed metadata" not in captured.out
+
+
 def test_outputs_command_refreshes_metadata_when_manifest_is_invalid(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
@@ -3385,6 +3501,71 @@ def test_feed_metadata_refresh_continues_after_malformed_article_metadata(
 
     second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
     assert second_metadata["feed"] == "La settimana di Domino"
+
+
+def test_feed_metadata_fallback_skips_unreadable_sidecar(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    unreadable_dir = output_dir / "unreadable"
+    valid_dir = output_dir / "valid"
+    unreadable_dir.mkdir(parents=True)
+    valid_dir.mkdir()
+    unreadable_url = "https://example.test/unreadable/"
+    valid_url = "https://example.test/valid/"
+    for article_dir, article_url in ((unreadable_dir, unreadable_url), (valid_dir, valid_url)):
+        (article_dir / "metadata.json").write_text(
+            json.dumps({"url": article_url}), encoding="utf-8"
+        )
+    read_metadata = read_article_metadata
+
+    def fake_read_article_metadata(article_dir: Path) -> dict[str, object]:
+        if article_dir == unreadable_dir:
+            raise PermissionError("metadata sidecar is unreadable")
+        return read_metadata(article_dir)
+
+    monkeypatch.setattr("get_my_domino.cli.read_article_metadata", fake_read_article_metadata)
+
+    manifest = cli._feed_manifest_with_metadata_fallback(output_dir)
+
+    assert cli._existing_article_dir(manifest, valid_url, output_dir=output_dir) == valid_dir
+    assert unreadable_url.rstrip("/") not in manifest
+
+
+def test_feed_metadata_refresh_continues_after_sidecar_io_error(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    first_dir = output_dir / "first"
+    second_dir = output_dir / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    first_url = "https://example.test/first/"
+    second_url = "https://example.test/second/"
+    write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    for article_dir in (first_dir, second_dir):
+        (article_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        cli,
+        "discover_feed_articles",
+        lambda config, *, max_pages: [
+            Link(title="First", url=first_url),
+            Link(title="Second", url=second_url, feed_number=2),
+        ],
+    )
+    update_metadata = update_article_metadata
+
+    def fake_update_article_metadata(article_dir: Path, updates: dict[str, object]) -> Path:
+        if article_dir == first_dir:
+            raise PermissionError("metadata sidecar is unwritable")
+        return update_metadata(article_dir, updates)
+
+    monkeypatch.setattr("get_my_domino.cli.update_article_metadata", fake_update_article_metadata)
+
+    cli._refresh_existing_feed_metadata(AppConfig(output_dir=tmp_path), output_dir)
+
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert second_metadata["feed_number"] == 2
 
 
 def test_outputs_command_continues_after_malformed_reused_article_metadata(

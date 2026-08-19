@@ -1517,8 +1517,13 @@ def _download_articles(
             else None
         )
         article = _with_fallback_author(article, fallback_author=fallback_author)
-        if article.url in manifest:
-            target_dir = Path(manifest[article.url]).expanduser()
+        existing_dir = _existing_article_dir(
+            manifest,
+            article.url,
+            output_dir=output_dir,
+        )
+        if existing_dir is not None:
+            target_dir = existing_dir
             with _progress_step(f"Writing files in {target_dir.name}"):
                 write_article_export(
                     target_dir,
@@ -2729,7 +2734,7 @@ def _download_new_articles(
         if existing_dir is not None:
             try:
                 _refresh_feed_article_metadata(existing_dir, article_link)
-            except ValueError:
+            except (OSError, ValueError):
                 pass
             if not force:
                 if create_audio and (max_articles is None or selected_count < max_articles):
@@ -3193,7 +3198,7 @@ def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None
         if existing_dir is not None:
             try:
                 _refresh_feed_article_metadata(existing_dir, article_link)
-            except ValueError:
+            except (OSError, ValueError):
                 continue
 
 
@@ -3206,7 +3211,7 @@ def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
             continue
         try:
             url = read_article_metadata(article_dir).get("url")
-        except ValueError:
+        except (OSError, ValueError):
             continue
         if isinstance(url, str) and url.strip():
             manifest[url] = str(article_dir)
