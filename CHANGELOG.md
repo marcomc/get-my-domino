@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Output Metadata
+
+- `outputs --rss`, `outputs --index`, and `outputs --all` refresh existing
+  weekly-feed metadata before generation when Domino is available, while
+  preserving offline output regeneration when the feed or local manifest is
+  unavailable.
+
 ## [0.3.0] - 2026-08-18 - Complete weekly-feed synchronization and speech fallback
 
 ### Fixed

@@ -62,6 +62,7 @@ from .storage import (
     article_basename,
     article_text_path,
     missing_article_export_files,
+    read_article_metadata,
     read_manifest,
     update_article_metadata,
     write_article,
@@ -1516,8 +1517,13 @@ def _download_articles(
             else None
         )
         article = _with_fallback_author(article, fallback_author=fallback_author)
-        if article.url in manifest:
-            target_dir = Path(manifest[article.url]).expanduser()
+        existing_dir = _existing_article_dir(
+            manifest,
+            article.url,
+            output_dir=output_dir,
+        )
+        if existing_dir is not None:
+            target_dir = existing_dir
             with _progress_step(f"Writing files in {target_dir.name}"):
                 write_article_export(
                     target_dir,
@@ -1753,19 +1759,16 @@ def _existing_article_dir(
     *,
     output_dir: Path,
 ) -> Path | None:
-    if article_url in manifest:
+    canonical_url = article_url.rstrip("/")
+    for candidate_url in (article_url, canonical_url, f"{canonical_url}/"):
+        if candidate_url not in manifest:
+            continue
         path = _remap_legacy_manifest_dir(
-            Path(manifest[article_url]).expanduser(),
+            Path(manifest[candidate_url]).expanduser(),
             output_dir=output_dir,
         )
-        return path if path.exists() else None
-    normalized_url = article_url.rstrip("/")
-    if normalized_url in manifest:
-        path = _remap_legacy_manifest_dir(
-            Path(manifest[normalized_url]).expanduser(),
-            output_dir=output_dir,
-        )
-        return path if path.exists() else None
+        if _manifest_target_is_active_directory(str(path), output_dir):
+            return path
     return None
 
 
@@ -2715,7 +2718,7 @@ def _download_new_articles(
     force: bool = False,
 ) -> int:
     client = WebClient(config)
-    manifest = read_manifest(output_dir)
+    manifest = _feed_manifest_with_metadata_fallback(output_dir)
     next_index = len(manifest) + 1
     downloaded_dirs: list[Path] = []
     audio_dirs: list[Path] = []
@@ -2729,7 +2732,10 @@ def _download_new_articles(
             output_dir=output_dir,
         )
         if existing_dir is not None:
-            _refresh_feed_article_metadata(existing_dir, article_link)
+            try:
+                _refresh_feed_article_metadata(existing_dir, article_link)
+            except (OSError, ValueError):
+                pass
             if not force:
                 if create_audio and (max_articles is None or selected_count < max_articles):
                     audio_dirs.append(existing_dir)
@@ -3179,6 +3185,120 @@ def _refresh_feed_article_metadata(article_dir: Path, article_link: Link) -> Non
     )
 
 
+def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None:
+    manifest = _feed_manifest_with_metadata_fallback(output_dir)
+    if not manifest:
+        return
+    for article_link in discover_feed_articles(config, max_pages=None):
+        existing_dir = _existing_article_dir(
+            manifest,
+            article_link.url,
+            output_dir=output_dir,
+        )
+        if existing_dir is not None:
+            try:
+                _refresh_feed_article_metadata(existing_dir, article_link)
+            except (OSError, ValueError):
+                continue
+
+
+def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
+    if not output_dir.exists():
+        return {}
+    manifest: dict[str, str] = {}
+    for article_dir in output_dir.iterdir():
+        if not article_dir.is_dir():
+            continue
+        try:
+            url = read_article_metadata(article_dir).get("url")
+        except (OSError, ValueError):
+            continue
+        if isinstance(url, str) and url.strip():
+            manifest[url] = str(article_dir)
+    return manifest
+
+
+def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
+    try:
+        manifest = read_manifest(output_dir)
+    except ValueError:
+        manifest = {}
+    for url in list(manifest):
+        canonical_url = url.rstrip("/")
+        aliases = (canonical_url, f"{canonical_url}/")
+        active_manifest_values = [
+            manifest[candidate]
+            for candidate in aliases
+            if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+        ]
+        active_manifest_value = next(
+            (
+                candidate
+                for candidate in active_manifest_values
+                if _manifest_target_matches_article_url(
+                    candidate,
+                    canonical_url,
+                    output_dir=output_dir,
+                )
+            ),
+            None,
+        )
+        if active_manifest_value is None:
+            if active_manifest_values:
+                for candidate in aliases:
+                    manifest.pop(candidate, None)
+            continue
+        for candidate in aliases:
+            manifest.pop(candidate, None)
+        manifest[canonical_url] = active_manifest_value
+    for url, article_dir in _manifest_from_article_metadata(output_dir).items():
+        canonical_url = url.rstrip("/")
+        aliases = (canonical_url, f"{canonical_url}/")
+        active_manifest_value = next(
+            (
+                manifest[candidate]
+                for candidate in aliases
+                if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+                and _manifest_target_matches_article_url(
+                    manifest[candidate],
+                    canonical_url,
+                    output_dir=output_dir,
+                )
+            ),
+            None,
+        )
+        for candidate in aliases:
+            manifest.pop(candidate, None)
+        manifest[canonical_url] = active_manifest_value or article_dir
+    return manifest
+
+
+def _manifest_target_is_active_directory(path_value: str | None, output_dir: Path) -> bool:
+    if not path_value:
+        return False
+    path = _remap_legacy_manifest_dir(Path(path_value).expanduser(), output_dir=output_dir)
+    try:
+        return path.is_dir() and path.resolve().is_relative_to(output_dir.resolve())
+    except OSError:
+        return False
+
+
+def _manifest_target_matches_article_url(
+    path_value: str,
+    article_url: str,
+    *,
+    output_dir: Path,
+) -> bool:
+    path = _remap_legacy_manifest_dir(Path(path_value).expanduser(), output_dir=output_dir)
+    try:
+        metadata_url = read_article_metadata(path).get("url")
+    except (OSError, ValueError):
+        return True
+    if not isinstance(metadata_url, str) or not metadata_url.strip():
+        return True
+    return metadata_url.rstrip("/") == article_url.rstrip("/")
+
+
 def _handle_sync_feed(
     config: AppConfig,
     *,
@@ -3222,16 +3342,7 @@ def _handle_sync_feed(
     )
     if podcast:
         if pages is not None:
-            complete_links = discover_feed_articles(config, max_pages=None)
-            manifest = read_manifest(output_dir)
-            for article_link in complete_links:
-                existing_dir = _existing_article_dir(
-                    manifest,
-                    article_link.url,
-                    output_dir=output_dir,
-                )
-                if existing_dir is not None:
-                    _refresh_feed_article_metadata(existing_dir, article_link)
+            _refresh_existing_feed_metadata(config, output_dir)
         _ensure_default_feed_collection_details(config)
         podcast_result = generate_podcast_outputs(
             config.library_dir,
@@ -3783,6 +3894,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             index = bool(args.index or args.all)
             if not rss and not index:
                 raise ValueError("outputs requires at least one of --rss, --index, or --all.")
+            output_dir = _feed_output_dir(config.output_dir, config)
+            try:
+                _refresh_existing_feed_metadata(config, output_dir)
+            except (FetchError, OSError, ValueError) as exc:
+                print(f"warning: using local feed metadata because refresh failed: {exc}")
             _ensure_default_feed_collection_details(config)
             result = generate_podcast_outputs(
                 config.library_dir,
