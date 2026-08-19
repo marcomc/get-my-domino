@@ -1762,7 +1762,7 @@ def _existing_article_dir(
             Path(manifest[candidate_url]).expanduser(),
             output_dir=output_dir,
         )
-        if path.is_dir():
+        if _manifest_target_is_active_directory(str(path), output_dir):
             return path
     return None
 
@@ -2730,7 +2730,7 @@ def _download_new_articles(
             try:
                 _refresh_feed_article_metadata(existing_dir, article_link)
             except ValueError:
-                continue
+                pass
             if not force:
                 if create_audio and (max_articles is None or selected_count < max_articles):
                     audio_dirs.append(existing_dir)
@@ -3218,20 +3218,36 @@ def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
         manifest = read_manifest(output_dir)
     except ValueError:
         manifest = {}
-    for url, article_dir in _manifest_from_article_metadata(output_dir).items():
+    for url in list(manifest):
         canonical_url = url.rstrip("/")
-        manifest_value = next(
+        aliases = (canonical_url, f"{canonical_url}/")
+        active_manifest_value = next(
             (
                 manifest[candidate]
-                for candidate in (url, canonical_url, f"{canonical_url}/")
-                if candidate in manifest
+                for candidate in aliases
+                if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
             ),
             None,
         )
-        if not _manifest_target_is_active_directory(manifest_value, output_dir):
-            for candidate in (canonical_url, f"{canonical_url}/"):
-                manifest.pop(candidate, None)
-            manifest[url] = article_dir
+        if active_manifest_value is None:
+            continue
+        for candidate in aliases:
+            manifest.pop(candidate, None)
+        manifest[canonical_url] = active_manifest_value
+    for url, article_dir in _manifest_from_article_metadata(output_dir).items():
+        canonical_url = url.rstrip("/")
+        aliases = (canonical_url, f"{canonical_url}/")
+        active_manifest_value = next(
+            (
+                manifest[candidate]
+                for candidate in aliases
+                if _manifest_target_is_active_directory(manifest.get(candidate), output_dir)
+            ),
+            None,
+        )
+        for candidate in aliases:
+            manifest.pop(candidate, None)
+        manifest[canonical_url] = active_manifest_value or article_dir
     return manifest
 
 
