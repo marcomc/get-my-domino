@@ -4948,6 +4948,61 @@ def test_ensure_audio_reports_normalizer_failure_when_fallback_is_disabled(
     assert calls == []
 
 
+def test_ensure_audio_rejects_whitespace_normalizer_output_before_tts(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    article_dir = tmp_path / "exports" / "001-editoriale"
+    article_dir.mkdir(parents=True)
+    raw_text = article_dir / "001-editoriale.txt"
+    raw_text.write_text("Titolo\n\nCorpo.", encoding="utf-8")
+    speech_text = article_dir / "001-editoriale.speech.txt"
+    synthesis_calls: list[Path] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, input, text, capture_output, timeout, check
+        speech_text.write_text(" \n", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+    def fake_synthesize_audio(source: Path, output: Path, **kwargs: object) -> Path:
+        del output, kwargs
+        synthesis_calls.append(source)
+        return article_dir / "unexpected.m4a"
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+    monkeypatch.setattr(cli, "synthesize_audio", fake_synthesize_audio)
+
+    with pytest.raises(audio_module.AudioError, match="usable output"):
+        cli._ensure_audio(
+            article_dir,
+            output_dir=tmp_path / "exports",
+            voice=None,
+            audio_format="m4a",
+            timeout=900.0,
+            speech_options=cli.SpeechNormalizeOptions(
+                enabled=True,
+                agent="codex",
+                command="codex",
+                model="",
+                timeout=900.0,
+                force=False,
+                fallback=False,
+                prompt_path=None,
+                diff=False,
+            ),
+        )
+
+    assert synthesis_calls == []
+    assert not speech_text.exists()
+
+
 def test_ensure_audio_uses_original_text_when_normalizer_returns_fallback_path(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -5162,6 +5217,127 @@ def test_codex_speech_normalizer_uses_backup_when_primary_creates_no_output(
     assert len(commands) == 4
     assert all("gpt-5.6-luna" in command for command in commands[:3])
     assert "gpt-5.6-terra" in commands[3]
+
+
+def test_codex_speech_normalizer_uses_backup_when_primary_creates_whitespace_output(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del input, text, capture_output, timeout, check
+        commands.append(command)
+        output.write_text(
+            "Titolo normalizzato" if "gpt-5.6-terra" in command else " \n\t",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    result = speech_normalize.ensure_speech_text(
+        source,
+        speech_normalize.SpeechNormalizeSettings(
+            enabled=True,
+            agent="codex",
+            command="codex",
+            model="gpt-5.6-luna",
+            backup_model="gpt-5.6-terra",
+            timeout=123.0,
+            force=False,
+            fallback=False,
+            prompt_path=None,
+            diff=False,
+        ),
+    )
+
+    assert result == output
+    assert output.read_text(encoding="utf-8") == "Titolo normalizzato\n"
+    assert len(commands) == 4
+    assert all("gpt-5.6-luna" in command for command in commands[:3])
+    assert "gpt-5.6-terra" in commands[3]
+
+
+def test_codex_speech_normalizer_rejects_whitespace_output_after_retries(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    calls = 0
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del command, kwargs
+        nonlocal calls
+        calls += 1
+        output.write_text("\n  \t", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    with pytest.raises(speech_normalize.SpeechNormalizeError, match="usable output"):
+        speech_normalize.ensure_speech_text(
+            source,
+            speech_normalize.SpeechNormalizeSettings(
+                enabled=True,
+                agent="codex",
+                command="codex",
+                model="",
+                timeout=123.0,
+                force=False,
+                fallback=False,
+                prompt_path=None,
+                diff=False,
+            ),
+        )
+
+    assert calls == 3
+    assert not output.exists()
+
+
+def test_codex_speech_normalizer_fallback_returns_original_after_whitespace_output(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del command, kwargs
+        output.write_text(" \n", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+
+    assert (
+        speech_normalize.ensure_speech_text(
+            source,
+            speech_normalize.SpeechNormalizeSettings(
+                enabled=True,
+                agent="codex",
+                command="codex",
+                model="",
+                timeout=123.0,
+                force=False,
+                fallback=True,
+                prompt_path=None,
+                diff=False,
+            ),
+        )
+        == source
+    )
+    assert not output.exists()
 
 
 def test_codex_speech_normalizer_tries_cli_default_before_backup_model(
@@ -5406,6 +5582,108 @@ def test_codex_speech_normalizer_reruns_when_prompt_file_changes(
     assert output.read_text(encoding="utf-8") == "Titolo seconda\n"
     assert calls == 2
     assert first_metadata["prompt_sha256"] != second_metadata["prompt_sha256"]
+
+
+def test_codex_speech_normalizer_regenerates_cached_whitespace_output(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_text(
+        json.dumps({"title": "Titolo", "url": "https://example.test/article"}),
+        encoding="utf-8",
+    )
+    calls = 0
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, input, text, capture_output, timeout, check
+        nonlocal calls
+        calls += 1
+        output.write_text("Titolo normalizzato", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+    settings = speech_normalize.SpeechNormalizeSettings(
+        enabled=True,
+        agent="codex",
+        command="codex",
+        model="gpt-5.6-luna",
+        timeout=123.0,
+        force=False,
+        fallback=False,
+        prompt_path=None,
+        diff=False,
+    )
+    assert speech_normalize.ensure_speech_text(source, settings) == output
+
+    output.write_text(" \n\t", encoding="utf-8")
+    assert speech_normalize.ensure_speech_text(source, settings) == output
+
+    assert calls == 2
+    assert output.read_text(encoding="utf-8") == "Titolo normalizzato\n"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))["speech_normalization"]
+    assert metadata["normalizer_model"] == "gpt-5.6-luna"
+
+
+def test_codex_speech_normalizer_rejects_output_made_empty_during_finalization(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "001-editoriale.txt"
+    source.write_text("Titolo", encoding="utf-8")
+    output = tmp_path / "001-editoriale.speech.txt"
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_text(
+        json.dumps({"title": "Titolo", "url": "https://example.test/article"}),
+        encoding="utf-8",
+    )
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, input, text, capture_output, timeout, check
+        output.write_text("Titolo normalizzato", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+    def empty_finalized_output(path: Path) -> None:
+        path.write_text(" \n", encoding="utf-8")
+
+    monkeypatch.setattr("get_my_domino.speech_normalize.subprocess.run", fake_run)
+    monkeypatch.setattr("get_my_domino.speech_normalize._finalize_output", empty_finalized_output)
+
+    with pytest.raises(speech_normalize.SpeechNormalizeError, match="produced unusable output"):
+        speech_normalize.ensure_speech_text(
+            source,
+            speech_normalize.SpeechNormalizeSettings(
+                enabled=True,
+                agent="codex",
+                command="codex",
+                model="gpt-5.6-luna",
+                timeout=123.0,
+                force=False,
+                fallback=False,
+                prompt_path=None,
+                diff=False,
+            ),
+        )
+
+    assert "speech_normalization" not in json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert not output.exists()
 
 
 def test_codex_speech_normalizer_retries_timeout_then_succeeds(

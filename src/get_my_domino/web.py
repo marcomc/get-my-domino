@@ -282,8 +282,8 @@ class WebClient:
         for form in soup.find_all("form"):
             if not isinstance(form, Tag):
                 continue
-            if form.find(attrs={"name": self.config.auth_username_field}) and form.find(
-                attrs={"name": self.config.auth_password_field}
+            if form.find(None, attrs={"name": self.config.auth_username_field}) and form.find(
+                None, attrs={"name": self.config.auth_password_field}
             ):
                 return form
         raise FetchError(

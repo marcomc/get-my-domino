@@ -118,9 +118,13 @@ def normalize_speech_text(
             raise
         raise SpeechNormalizeError(str(exc)) from exc
 
-    if not output_path.exists():
-        raise SpeechNormalizeError(f"Speech normalizer did not create: {output_path}")
+    if not _has_usable_output(output_path):
+        raise SpeechNormalizeError(f"Speech normalizer did not create usable output: {output_path}")
     _finalize_output(output_path)
+    if not _has_usable_output(output_path):
+        if output_path.exists():
+            output_path.unlink()
+        raise SpeechNormalizeError(f"Speech normalizer produced unusable output: {output_path}")
     _write_speech_metadata(
         source_text_path,
         output_path,
@@ -142,7 +146,7 @@ def _can_reuse(
     prompt_info: PromptTemplateInfo,
     source_text_sha256: str,
 ) -> bool:
-    if force or not output_path.exists():
+    if force or not _has_usable_output(output_path):
         return False
     if output_path.stat().st_mtime < source_text_path.stat().st_mtime:
         return False
@@ -249,13 +253,15 @@ def _run_codex_normalizer(
                     stderr=result.stderr,
                 )
             )
-            if result.returncode == 0 and output_path.exists():
+            if result.returncode == 0 and _has_usable_output(output_path):
                 log_path.write_text("\n\n".join(attempts), encoding="utf-8")
                 return model
             if result.returncode == 0:
+                if output_path.exists():
+                    output_path.unlink()
                 last_error = SpeechNormalizeError(
                     f"codex normalizer exited successfully using {model or 'default model'} "
-                    "but did not create the requested output"
+                    "but did not create usable output"
                 )
                 continue
             last_error = SpeechNormalizeError(
@@ -317,6 +323,13 @@ def _decode_subprocess_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _has_usable_output(output_path: Path) -> bool:
+    try:
+        return bool(output_path.read_text(encoding="utf-8").strip())
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _codex_prompt(
