@@ -2727,7 +2727,10 @@ def _download_new_articles(
             output_dir=output_dir,
         )
         if existing_dir is not None:
-            _refresh_feed_article_metadata(existing_dir, article_link)
+            try:
+                _refresh_feed_article_metadata(existing_dir, article_link)
+            except ValueError:
+                continue
             if not force:
                 if create_audio and (max_articles is None or selected_count < max_articles):
                     audio_dirs.append(existing_dir)
@@ -3188,7 +3191,10 @@ def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None
             output_dir=output_dir,
         )
         if existing_dir is not None:
-            _refresh_feed_article_metadata(existing_dir, article_link)
+            try:
+                _refresh_feed_article_metadata(existing_dir, article_link)
+            except ValueError:
+                continue
 
 
 def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
@@ -3223,6 +3229,8 @@ def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
             None,
         )
         if not _manifest_target_is_active_directory(manifest_value, output_dir):
+            for candidate in (canonical_url, f"{canonical_url}/"):
+                manifest.pop(candidate, None)
             manifest[url] = article_dir
     return manifest
 

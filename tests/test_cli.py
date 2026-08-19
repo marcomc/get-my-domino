@@ -2869,6 +2869,46 @@ def test_sync_feed_reuses_article_when_manifest_is_invalid(
     assert read_manifest(output_dir)[article_url] == str(existing_dir)
 
 
+def test_sync_feed_continues_after_malformed_reused_article_metadata(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    first_dir = output_dir / "first"
+    second_dir = output_dir / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    first_url = "https://example.test/first/"
+    second_url = "https://example.test/second/"
+    write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    (first_dir / "metadata.json").write_text("{", encoding="utf-8")
+    (second_dir / "metadata.json").write_text("{}", encoding="utf-8")
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            raise AssertionError(f"should not download reused article: {url}")
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+
+    assert (
+        cli._download_new_articles(
+            [Link(title="First", url=first_url), Link(title="Second", url=second_url)],
+            config=AppConfig(output_dir=tmp_path),
+            output_dir=output_dir,
+            create_audio=False,
+            audio_format="m4a",
+            audio_timeout=900.0,
+            export_formats=("txt",),
+            max_articles=None,
+        )
+        == 0
+    )
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert second_metadata["feed"] == "La settimana di Domino"
+
+
 def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -3109,6 +3149,7 @@ def _run_outputs_metadata_refresh(
     *,
     output_dir: Path,
     article_url: str,
+    article_links: list[Link] | None = None,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -3124,14 +3165,17 @@ def _run_outputs_metadata_refresh(
     monkeypatch.setattr(
         cli,
         "discover_feed_articles",
-        lambda feed_config, *, max_pages: [
-            Link(
-                title="USA e globalizzazione",
-                url=article_url,
-                published_date="2026-04-24",
-                feed_number=15,
-            )
-        ],
+        lambda feed_config, *, max_pages: (
+            article_links
+            or [
+                Link(
+                    title="USA e globalizzazione",
+                    url=article_url,
+                    published_date="2026-04-24",
+                    feed_number=15,
+                )
+            ]
+        ),
     )
     monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
     monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
@@ -3276,8 +3320,9 @@ def test_outputs_command_refreshes_metadata_without_manifest(
     assert metadata["feed_number"] == 15
 
 
+@pytest.mark.parametrize("metadata_has_trailing_slash", [False, True])
 def test_outputs_command_refreshes_metadata_when_manifest_path_is_stale(
-    tmp_path: Path, monkeypatch: MonkeyPatch
+    tmp_path: Path, monkeypatch: MonkeyPatch, metadata_has_trailing_slash: bool
 ) -> None:
     output_dir = tmp_path / "exports"
     config = AppConfig(output_dir=output_dir)
@@ -3291,9 +3336,11 @@ def test_outputs_command_refreshes_metadata_when_manifest_path_is_stale(
         json.dumps({"title": "Original archive article", "url": article_url}),
         encoding="utf-8",
     )
-    write_manifest(feed_dir, {article_url: str(former_dir)})
+    metadata_url = article_url if metadata_has_trailing_slash else article_url.rstrip("/")
+    stale_manifest_url = article_url.rstrip("/") if metadata_has_trailing_slash else article_url
+    write_manifest(feed_dir, {stale_manifest_url: str(former_dir)})
     (article_dir / "metadata.json").write_text(
-        json.dumps({"title": "USA e globalizzazione", "url": article_url}),
+        json.dumps({"title": "USA e globalizzazione", "url": metadata_url}),
         encoding="utf-8",
     )
     _run_outputs_metadata_refresh(
@@ -3303,6 +3350,65 @@ def test_outputs_command_refreshes_metadata_when_manifest_path_is_stale(
     assert metadata["feed_number"] == 15
     former_metadata = json.loads((former_dir / "metadata.json").read_text(encoding="utf-8"))
     assert "feed_number" not in former_metadata
+
+
+def test_feed_metadata_refresh_continues_after_malformed_article_metadata(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    first_dir = output_dir / "first"
+    second_dir = output_dir / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    first_url = "https://example.test/first/"
+    second_url = "https://example.test/second/"
+    write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    (first_dir / "metadata.json").write_text("{", encoding="utf-8")
+    (second_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        cli,
+        "discover_feed_articles",
+        lambda config, *, max_pages: [
+            Link(title="First", url=first_url),
+            Link(title="Second", url=second_url),
+        ],
+    )
+
+    cli._refresh_existing_feed_metadata(AppConfig(output_dir=tmp_path), output_dir)
+
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert second_metadata["feed"] == "La settimana di Domino"
+
+
+def test_outputs_command_continues_after_malformed_reused_article_metadata(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    config = AppConfig(output_dir=output_dir)
+    feed_dir = cli._feed_output_dir(output_dir, config)
+    first_dir = feed_dir / "first"
+    second_dir = feed_dir / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    first_url = "https://example.test/first/"
+    second_url = "https://example.test/second/"
+    write_manifest(feed_dir, {first_url: str(first_dir), second_url: str(second_dir)})
+    (first_dir / "metadata.json").write_text("{", encoding="utf-8")
+    (second_dir / "metadata.json").write_text("{}", encoding="utf-8")
+
+    _run_outputs_metadata_refresh(
+        tmp_path,
+        monkeypatch,
+        output_dir=output_dir,
+        article_url=first_url,
+        article_links=[
+            Link(title="First", url=first_url, feed_number=1),
+            Link(title="Second", url=second_url, feed_number=2),
+        ],
+    )
+
+    second_metadata = json.loads((second_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert second_metadata["feed_number"] == 2
 
 
 def test_feed_manifest_keeps_valid_active_path_over_duplicate_metadata(tmp_path: Path) -> None:
@@ -3339,10 +3445,10 @@ def test_sync_feed_bounded_podcast_refreshes_metadata_for_full_library(
     first_url = "https://www.rivistadomino.it/blog/2026/03/20/first/"
     second_url = "https://www.rivistadomino.it/blog/2026/03/13/second/"
     write_manifest(output_dir, {first_url: str(first_dir), second_url: str(second_dir)})
-    for article_dir in (first_dir, second_dir):
-        (article_dir / "metadata.json").write_text(
-            json.dumps({"title": article_dir.name}), encoding="utf-8"
-        )
+    (first_dir / "metadata.json").write_text("{", encoding="utf-8")
+    (second_dir / "metadata.json").write_text(
+        json.dumps({"title": second_dir.name}), encoding="utf-8"
+    )
     partial_links = [Link(title="First", url=first_url, published_date="2026-03-20", feed_number=2)]
     complete_links = partial_links + [
         Link(title="Second", url=second_url, published_date="2026-03-13", feed_number=1)
