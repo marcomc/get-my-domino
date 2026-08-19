@@ -3179,6 +3179,18 @@ def _refresh_feed_article_metadata(article_dir: Path, article_link: Link) -> Non
     )
 
 
+def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None:
+    manifest = read_manifest(output_dir)
+    for article_link in discover_feed_articles(config, max_pages=None):
+        existing_dir = _existing_article_dir(
+            manifest,
+            article_link.url,
+            output_dir=output_dir,
+        )
+        if existing_dir is not None:
+            _refresh_feed_article_metadata(existing_dir, article_link)
+
+
 def _handle_sync_feed(
     config: AppConfig,
     *,
@@ -3222,16 +3234,7 @@ def _handle_sync_feed(
     )
     if podcast:
         if pages is not None:
-            complete_links = discover_feed_articles(config, max_pages=None)
-            manifest = read_manifest(output_dir)
-            for article_link in complete_links:
-                existing_dir = _existing_article_dir(
-                    manifest,
-                    article_link.url,
-                    output_dir=output_dir,
-                )
-                if existing_dir is not None:
-                    _refresh_feed_article_metadata(existing_dir, article_link)
+            _refresh_existing_feed_metadata(config, output_dir)
         _ensure_default_feed_collection_details(config)
         podcast_result = generate_podcast_outputs(
             config.library_dir,
@@ -3783,6 +3786,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             index = bool(args.index or args.all)
             if not rss and not index:
                 raise ValueError("outputs requires at least one of --rss, --index, or --all.")
+            output_dir = _feed_output_dir(config.output_dir, config)
+            _refresh_existing_feed_metadata(config, output_dir)
             _ensure_default_feed_collection_details(config)
             result = generate_podcast_outputs(
                 config.library_dir,
