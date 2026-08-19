@@ -1884,10 +1884,16 @@ def test_resolved_issue_article_dirs_prefers_manifest_paths_for_legacy_issue_tre
     assert resolved == [legacy_dir]
 
 
-def test_existing_article_dir_ignores_missing_manifest_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("target_kind", ["missing", "file"])
+def test_existing_article_dir_ignores_unusable_manifest_path(
+    tmp_path: Path, target_kind: str
+) -> None:
     output_dir = tmp_path / "exports"
-    missing_dir = output_dir / "missing-article"
-    write_manifest(output_dir, {"https://example.test/article": str(missing_dir)})
+    target = output_dir / "article"
+    if target_kind == "file":
+        target.parent.mkdir(parents=True)
+        target.write_text("not a directory", encoding="utf-8")
+    write_manifest(output_dir, {"https://example.test/article": str(target)})
 
     resolved = cli._existing_article_dir(
         read_manifest(output_dir),
@@ -3163,6 +3169,12 @@ def test_outputs_command_uses_local_metadata_when_feed_refresh_fails(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
     output_dir = tmp_path / "exports"
+    config = AppConfig(output_dir=output_dir)
+    feed_dir = cli._feed_output_dir(output_dir, config)
+    article_dir = feed_dir / "existing-article"
+    article_dir.mkdir(parents=True)
+    article_url = "https://www.rivistadomino.it/blog/2026/04/24/usa-e-globalizzazione/"
+    write_manifest(feed_dir, {article_url: str(article_dir)})
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join(
@@ -3191,6 +3203,34 @@ def test_outputs_command_uses_local_metadata_when_feed_refresh_fails(
 
     assert result == 0
     assert "using local feed metadata" in capsys.readouterr().out
+
+
+def test_outputs_command_skips_feed_discovery_without_local_articles(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "exports"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'output_dir = "{output_dir}"\npodcast_output_dir = "{tmp_path / "podcasts"}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "discover_feed_articles",
+        lambda feed_config, *, max_pages: (_ for _ in ()).throw(
+            AssertionError("should not discover an empty feed archive")
+        ),
+    )
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+    monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
+    monkeypatch.setattr(
+        cli,
+        "generate_podcast_outputs",
+        lambda *args, **kwargs: {"rss": 1, "index": None},
+    )
+
+    assert cli.main(["--config", str(config_path), "outputs", "--rss"]) == 0
+    assert "using local feed metadata" not in capsys.readouterr().out
 
 
 def test_outputs_command_refreshes_metadata_when_manifest_is_invalid(
@@ -3263,6 +3303,28 @@ def test_outputs_command_refreshes_metadata_when_manifest_path_is_stale(
     assert metadata["feed_number"] == 15
     former_metadata = json.loads((former_dir / "metadata.json").read_text(encoding="utf-8"))
     assert "feed_number" not in former_metadata
+
+
+def test_feed_manifest_keeps_valid_active_path_over_duplicate_metadata(tmp_path: Path) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    article_url = "https://www.rivistadomino.it/blog/2026/04/24/usa-e-globalizzazione/"
+    manifest_dir = output_dir / "manifest-article"
+    duplicate_dir = output_dir / "duplicate-article"
+    for article_dir in (manifest_dir, duplicate_dir):
+        article_dir.mkdir(parents=True)
+        (article_dir / "metadata.json").write_text(
+            json.dumps({"url": article_url.rstrip("/")}), encoding="utf-8"
+        )
+    write_manifest(output_dir, {article_url: str(manifest_dir)})
+
+    manifest = cli._feed_manifest_with_metadata_fallback(output_dir)
+
+    assert manifest[article_url] == str(manifest_dir)
+    assert article_url.rstrip("/") not in manifest
+    assert (
+        cli._existing_article_dir(manifest, article_url.rstrip("/"), output_dir=output_dir)
+        == manifest_dir
+    )
 
 
 def test_sync_feed_bounded_podcast_refreshes_metadata_for_full_library(

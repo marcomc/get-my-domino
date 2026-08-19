@@ -1754,14 +1754,15 @@ def _existing_article_dir(
     *,
     output_dir: Path,
 ) -> Path | None:
-    for candidate_url in (article_url, article_url.rstrip("/")):
+    canonical_url = article_url.rstrip("/")
+    for candidate_url in (article_url, canonical_url, f"{canonical_url}/"):
         if candidate_url not in manifest:
             continue
         path = _remap_legacy_manifest_dir(
             Path(manifest[candidate_url]).expanduser(),
             output_dir=output_dir,
         )
-        if path.exists():
+        if path.is_dir():
             return path
     return None
 
@@ -3178,6 +3179,8 @@ def _refresh_feed_article_metadata(article_dir: Path, article_link: Link) -> Non
 
 def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None:
     manifest = _feed_manifest_with_metadata_fallback(output_dir)
+    if not manifest:
+        return
     for article_link in discover_feed_articles(config, max_pages=None):
         existing_dir = _existing_article_dir(
             manifest,
@@ -3209,8 +3212,29 @@ def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
         manifest = read_manifest(output_dir)
     except ValueError:
         manifest = {}
-    manifest.update(_manifest_from_article_metadata(output_dir))
+    for url, article_dir in _manifest_from_article_metadata(output_dir).items():
+        canonical_url = url.rstrip("/")
+        manifest_value = next(
+            (
+                manifest[candidate]
+                for candidate in (url, canonical_url, f"{canonical_url}/")
+                if candidate in manifest
+            ),
+            None,
+        )
+        if not _manifest_target_is_active_directory(manifest_value, output_dir):
+            manifest[url] = article_dir
     return manifest
+
+
+def _manifest_target_is_active_directory(path_value: str | None, output_dir: Path) -> bool:
+    if not path_value:
+        return False
+    path = _remap_legacy_manifest_dir(Path(path_value).expanduser(), output_dir=output_dir)
+    try:
+        return path.is_dir() and path.resolve().is_relative_to(output_dir.resolve())
+    except OSError:
+        return False
 
 
 def _handle_sync_feed(
