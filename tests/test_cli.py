@@ -2769,6 +2769,52 @@ def test_sync_feed_audio_includes_existing_manifest_articles(
     assert "new_articles: 0" in captured.out
 
 
+def test_sync_feed_reuses_article_when_manifest_path_is_stale(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "la-settimana-di-domino"
+    existing_dir = output_dir / "22-2026-03-20-che-succede-in-medio-oriente"
+    existing_dir.mkdir(parents=True)
+    article_url = "https://www.rivistadomino.it/blog/2026/03/20/guerra-in-iran/"
+    (existing_dir / "metadata.json").write_text(
+        json.dumps({"title": "Che succede in Medio Oriente", "url": article_url}),
+        encoding="utf-8",
+    )
+    write_manifest(output_dir, {article_url: str(tmp_path / "former-library" / "article")})
+
+    class FakeWebClient:
+        def __init__(self, config: AppConfig) -> None:
+            del config
+
+        def download_article(self, url: str) -> Article:
+            raise AssertionError(f"should not redownload existing article: {url}")
+
+    monkeypatch.setattr(cli, "WebClient", FakeWebClient)
+
+    result = cli._download_new_articles(
+        [
+            Link(
+                title="Che succede in Medio Oriente",
+                url=article_url,
+                published_date="2026-03-20",
+                feed_number=22,
+            )
+        ],
+        config=AppConfig(output_dir=tmp_path),
+        output_dir=output_dir,
+        create_audio=False,
+        audio_format="m4a",
+        audio_timeout=900.0,
+        export_formats=("txt",),
+        max_articles=None,
+    )
+
+    assert result == 0
+    metadata = json.loads((existing_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["feed_number"] == 22
+    assert read_manifest(output_dir)[article_url] == str(existing_dir)
+
+
 def test_sync_feed_audio_existing_articles_respects_max_articles_and_force(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -3131,6 +3177,58 @@ def test_outputs_command_refreshes_metadata_without_manifest(
     article_dir = feed_dir / "2026-04-24-usa-e-globalizzazione"
     article_dir.mkdir(parents=True)
     article_url = "https://www.rivistadomino.it/blog/2026/04/24/usa-e-globalizzazione/"
+    (article_dir / "metadata.json").write_text(
+        json.dumps({"title": "USA e globalizzazione", "url": article_url}),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'output_dir = "{output_dir}"',
+                f'podcast_output_dir = "{tmp_path / "podcasts"}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "discover_feed_articles",
+        lambda feed_config, *, max_pages: [
+            Link(
+                title="USA e globalizzazione",
+                url=article_url,
+                published_date="2026-04-24",
+                feed_number=15,
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "_ensure_default_feed_collection_details", lambda config: None)
+    monkeypatch.setattr(cli, "_print_podcast_outputs", lambda result: None)
+    monkeypatch.setattr(
+        cli,
+        "generate_podcast_outputs",
+        lambda *args, **kwargs: {"rss": 1, "index": None},
+    )
+
+    result = cli.main(["--config", str(config_path), "outputs", "--rss"])
+
+    assert result == 0
+    metadata = json.loads((article_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["feed_number"] == 15
+
+
+def test_outputs_command_refreshes_metadata_when_manifest_path_is_stale(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "exports"
+    config = AppConfig(output_dir=output_dir)
+    feed_dir = cli._feed_output_dir(output_dir, config)
+    article_dir = feed_dir / "2026-04-24-usa-e-globalizzazione"
+    article_dir.mkdir(parents=True)
+    article_url = "https://www.rivistadomino.it/blog/2026/04/24/usa-e-globalizzazione/"
+    write_manifest(feed_dir, {article_url: str(tmp_path / "former-library" / "article")})
     (article_dir / "metadata.json").write_text(
         json.dumps({"title": "USA e globalizzazione", "url": article_url}),
         encoding="utf-8",

@@ -1754,19 +1754,15 @@ def _existing_article_dir(
     *,
     output_dir: Path,
 ) -> Path | None:
-    if article_url in manifest:
+    for candidate_url in (article_url, article_url.rstrip("/")):
+        if candidate_url not in manifest:
+            continue
         path = _remap_legacy_manifest_dir(
-            Path(manifest[article_url]).expanduser(),
+            Path(manifest[candidate_url]).expanduser(),
             output_dir=output_dir,
         )
-        return path if path.exists() else None
-    normalized_url = article_url.rstrip("/")
-    if normalized_url in manifest:
-        path = _remap_legacy_manifest_dir(
-            Path(manifest[normalized_url]).expanduser(),
-            output_dir=output_dir,
-        )
-        return path if path.exists() else None
+        if path.exists():
+            return path
     return None
 
 
@@ -2716,7 +2712,7 @@ def _download_new_articles(
     force: bool = False,
 ) -> int:
     client = WebClient(config)
-    manifest = read_manifest(output_dir)
+    manifest = _feed_manifest_with_metadata_fallback(output_dir)
     next_index = len(manifest) + 1
     downloaded_dirs: list[Path] = []
     audio_dirs: list[Path] = []
@@ -3181,10 +3177,7 @@ def _refresh_feed_article_metadata(article_dir: Path, article_link: Link) -> Non
 
 
 def _refresh_existing_feed_metadata(config: AppConfig, output_dir: Path) -> None:
-    manifest = {
-        **_manifest_from_article_metadata(output_dir),
-        **read_manifest(output_dir),
-    }
+    manifest = _feed_manifest_with_metadata_fallback(output_dir)
     for article_link in discover_feed_articles(config, max_pages=None):
         existing_dir = _existing_article_dir(
             manifest,
@@ -3208,6 +3201,14 @@ def _manifest_from_article_metadata(output_dir: Path) -> dict[str, str]:
             continue
         if isinstance(url, str) and url.strip():
             manifest[url] = str(article_dir)
+    return manifest
+
+
+def _feed_manifest_with_metadata_fallback(output_dir: Path) -> dict[str, str]:
+    manifest = read_manifest(output_dir)
+    for article_url, article_dir in _manifest_from_article_metadata(output_dir).items():
+        if _existing_article_dir(manifest, article_url, output_dir=output_dir) is None:
+            manifest[article_url] = article_dir
     return manifest
 
 
